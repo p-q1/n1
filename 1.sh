@@ -50,21 +50,18 @@ cat <<EOF
         └ BR-SRV: $BR_SRV (gw $BR_FW_ENS20)
 
  GRE: $HQ_RTR_GRE ── $BR_RTR_GRE
-──────────────────────────────────────────────────────────────────────────────
- ПРИМЕНЕНИЕ НА ВМ (Alt Linux)
-──────────────────────────────────────────────────────────────────────────────
- 1) apt-get update && apt-get install -y NetworkManager-tui
+
+ 1. apt-get update && apt-get install -y NetworkManager-tui
     systemctl enable --now NetworkManager
 
- 2) Переводим интерфейсы на NM:
+ 2. Переводим интерфейсы на NM:
     sed -i 's/^NM_CONTROLLED=.*/NM_CONTROLLED=yes/' /etc/net/ifaces/*/options
     sed -i 's/^DISABLED=.*/DISABLED=yes/'         /etc/net/ifaces/*/options
     (строки нет — вписать в options вручную)
     systemctl restart network NetworkManager
- 3) nmtui → Edit a connection → интерфейс → Edit:
+ 3. nmtui → Edit a connection → интерфейс → Edit:
     IPv4 CONFIGURATION = Manual · Show · Addresses = IP/маска
     при необходимости — Gateway.  OK → Activate a connection.
 
- 4) Проверка: ping <шлюз> && ping <удалённый_адрес>
-──────────────────────────────────────────────────────────────────────────────
+ 4. Проверка: ping <шлюз> && ping <удалённый_адрес>
 EOF

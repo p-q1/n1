@@ -1,9 +1,7 @@
 #!/bin/bash
 clear
 cat <<'EOF'
-══════════════════════════════════════════════════════════════════════════════
- ЗАДАНИЕ 2: NAT НА ISP
-══════════════════════════════════════════════════════════════════════════════
+2: NAT НА ISP
  [ISP]
    nano /etc/net/sysctl.conf          # net.ipv4.ip_forward = 1
    sysctl -p /etc/net/sysctl.conf
@@ -17,5 +15,5 @@ cat <<'EOF'
    nano /etc/net/sysctl.conf          # net.ipv4.ip_forward = 1
    sysctl -p /etc/net/sysctl.conf
    ping 8.8.8.8
-══════════════════════════════════════════════════════════════════════════════
+   
 EOF

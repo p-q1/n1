@@ -1,9 +1,7 @@
 #!/bin/bash
 clear
 cat <<'EOF'
-══════════════════════════════════════════════════════════════════════════════
- ЗАДАНИЕ 4: VLAN ЧЕРЕЗ nmtui
-══════════════════════════════════════════════════════════════════════════════
+4: VLAN ЧЕРЕЗ nmtui
  [HQ-RTR]  ens20 — trunk (без IP), поверх него 3 VLAN
    nmtui → Edit a connection → Add → VLAN
      ├ vlan100:  Parent = ens20 · VLAN ID = 100 · IPv4 = Manual · 192.168.100.1/27
@@ -19,8 +17,8 @@ cat <<'EOF'
  [HQ-CLI]  ens19 — trunk, VLAN 200, адрес по DHCP
    nmtui → Edit a connection → Add → VLAN
      └ vlan200:  Parent = ens19 · VLAN ID = 200 · IPv4 = Automatic (DHCP)
-══════════════════════════════════════════════════════════════════════════════
+
  После создания: Activate a connection → поднять каждый VLAN.
  Проверка: ip -br a  (на HQ-RTR видны vlan100/200/999, на SRV/CLI — свои).
-══════════════════════════════════════════════════════════════════════════════
+
 EOF

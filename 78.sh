@@ -1,9 +1,7 @@
 #!/bin/bash
 clear
 cat <<'EOF'
-══════════════════════════════════════════════════════════════════════════════
- ЗАДАНИЯ 7-8: OSPF (FRR) + NAT
-══════════════════════════════════════════════════════════════════════════════
+7-8: OSPF (FRR) + NAT
  [HQ-RTR, BR-RTR, BR-FW] — установка FRR
    echo 'nameserver 8.8.8.8' > /etc/resolv.conf
    apt-get update && apt-get install -y frr
@@ -40,7 +38,6 @@ cat <<'EOF'
    iptables -P FORWARD ACCEPT
    iptables-save > /etc/sysconfig/iptables
    systemctl enable --now iptables
-══════════════════════════════════════════════════════════════════════════════
+   
  Проверка: vtysh -c 'show ip ospf neighbor' (Full) · ping 8.8.8.8
-══════════════════════════════════════════════════════════════════════════════
 EOF

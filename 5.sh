@@ -1,9 +1,7 @@
 #!/bin/bash
 clear
 cat <<'EOF'
-══════════════════════════════════════════════════════════════════════════════
- ЗАДАНИЕ 5: SSH — порт 2027, только sshuser, 2 попытки, баннер
-══════════════════════════════════════════════════════════════════════════════
+5: SSH — порт 2027, только sshuser, 2 попытки, баннер
  [HQ-SRV, BR-SRV] — одинаково на обеих машинах
    echo 'Authorized access only' > /etc/openssh/banner
    sed -i '/^#*Port /d; /^#*MaxAuthTries /d; /^#*Banner /d; /^AllowUsers/d' \
@@ -16,5 +14,5 @@ AllowUsers sshuser
 EOT
    systemctl restart sshd
    systemctl is-active sshd && ss -tln | grep 2027
-══════════════════════════════════════════════════════════════════════════════
+
 EOF

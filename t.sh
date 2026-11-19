@@ -197,6 +197,7 @@ EOF
     setup_nat() {
         local out_iface="$1"
         enable_ip_forward
+        iptables -I INPUT -p 89 -j ACCEPT 2>/dev/null || true
         run "iptables -t nat -A POSTROUTING -o $out_iface -j MASQUERADE"
         run "iptables -P FORWARD ACCEPT"
         run "iptables-save > /etc/sysconfig/iptables"
@@ -244,54 +245,73 @@ EOF
         sed -i 's/^zebra=no/zebra=yes/' /etc/frr/daemons
         sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons
 
-        run "systemctl enable --now frr"
-
         if [ "$role" = "hq-rtr" ]; then
-            vtysh -c 'conf t' \
-                   -c 'router ospf' \
-                   -c 'passive-interface default' \
-                   -c 'network 10.10.10.0/30 area 0' \
-                   -c 'network 192.168.100.0/27 area 0' \
-                   -c 'network 192.168.200.0/28 area 0' \
-                   -c 'int gre1' \
-                   -c 'no ip ospf passive' \
-                   -c 'ip ospf authentication message-digest' \
-                   -c 'ip ospf message-digest-key 1 md5 P@ssw0rd' \
-                   -c 'ip ospf network point-to-point' \
-                   -c 'ip ospf mtu-ignore' \
-                   -c 'end' \
-                   -c 'write memory'
+            cat > /tmp/ospf.cfg <<EOF
+conf t
+router ospf
+router-id 10.10.10.1
+passive-interface default
+network 10.10.10.0/30 area 0
+network 192.168.100.0/27 area 0
+network 192.168.200.0/28 area 0
+area 0 authentication message-digest
+exit
+int gre1
+no ip ospf passive
+ip ospf authentication message-digest
+ip ospf message-digest-key 1 md5 $OSPF_PASS
+ip ospf network point-to-point
+ip ospf mtu-ignore
+exit
+end
+write memory
+EOF
         elif [ "$role" = "br-rtr" ]; then
-            vtysh -c 'conf t' \
-                   -c 'router ospf' \
-                   -c 'passive-interface default' \
-                   -c 'network 10.10.10.0/30 area 0' \
-                   -c 'network 192.168.30.0/30 area 0' \
-                   -c 'int gre1' \
-                   -c 'no ip ospf passive' \
-                   -c 'ip ospf authentication message-digest' \
-                   -c 'ip ospf message-digest-key 1 md5 P@ssw0rd' \
-                   -c 'ip ospf network point-to-point' \
-                   -c 'ip ospf mtu-ignore' \
-                   -c 'int ens20' \
-                   -c 'no ip ospf passive' \
-                   -c 'ip ospf network point-to-point' \
-                   -c 'end' \
-                   -c 'write memory'
+            cat > /tmp/ospf.cfg <<EOF
+conf t
+router ospf
+router-id 10.10.10.2
+passive-interface default
+network 10.10.10.0/30 area 0
+network 192.168.30.0/30 area 0
+area 0 authentication message-digest
+exit
+int gre1
+no ip ospf passive
+ip ospf authentication message-digest
+ip ospf message-digest-key 1 md5 $OSPF_PASS
+ip ospf network point-to-point
+ip ospf mtu-ignore
+exit
+int ens20
+no ip ospf passive
+ip ospf network point-to-point
+exit
+end
+write memory
+EOF
         elif [ "$role" = "br-fw" ]; then
-            vtysh -c 'conf t' \
-                   -c 'router ospf' \
-                   -c 'passive-interface default' \
-                   -c 'network 192.168.30.0/30 area 0' \
-                   -c 'network 192.168.0.0/28 area 0' \
-                   -c 'int ens19' \
-                   -c 'no ip ospf passive' \
-                   -c 'ip ospf network point-to-point' \
-                   -c 'end' \
-                   -c 'write memory'
+            cat > /tmp/ospf.cfg <<EOF
+conf t
+router ospf
+router-id 192.168.30.2
+passive-interface default
+network 192.168.30.0/30 area 0
+network 192.168.0.0/28 area 0
+exit
+int ens19
+no ip ospf passive
+ip ospf network point-to-point
+exit
+end
+write memory
+EOF
         fi
-        hist "vtysh -c 'show running-config'"
+        run "systemctl enable --now frr"
         run "systemctl restart frr"
+        sleep 3
+        run "vtysh -f /tmp/ospf.cfg"
+        hist "cat /tmp/ospf.cfg"
     }
 
     setup_ovs_bridge() {

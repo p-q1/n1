@@ -1,6 +1,4 @@
 #!/bin/bash
-# t.sh — финальная версия для Alt Server
-# Запуск: source <(curl -sL ...) или bash t.sh
 
 main() {
     set -u
@@ -10,9 +8,6 @@ main() {
         return 1
     fi
 
-    # ============================================================
-    # 1. Параметры по умолчанию
-    # ============================================================
     local ISP_ENS20="172.16.30.1/28"
     local ISP_ENS21="172.16.40.1/28"
     local HQ_RTR_ENS19="172.16.30.2/28"
@@ -32,10 +27,6 @@ main() {
     local OSPF_PASS="P@ssw0rd"
     local TZ="Europe/Moscow"
 
-    # ============================================================
-    # 2. Хелперы (запись в историю)
-    # ============================================================
-    # Функция hist теперь пишет напрямую в файл истории, чтобы команды точно сохранились
     hist() { 
         history -s "$1" 2>/dev/null || true
         echo "$1" >> "$HOME/.bash_history"
@@ -43,9 +34,6 @@ main() {
     run() { eval "$1"; hist "$1"; }
     ask() { local p="$1" d="$2" v; read -r -p "$p [$d]: " v; echo "${v:-$d}"; }
 
-    # ============================================================
-    # 3. Выбор машины
-    # ============================================================
     clear
     echo "=== Выбор машины ==="
     local MACHINE
@@ -54,16 +42,13 @@ main() {
     done
     echo "Выбрано: $MACHINE"
 
-    # ============================================================
-    # 4. Ввод параметров
-    # ============================================================
     case "$MACHINE" in
         ISP)
-            ISP_ENS20=$(ask "ISP ens20 (→HQ)" "$ISP_ENS20")
-            ISP_ENS21=$(ask "ISP ens21 (→BR)" "$ISP_ENS21")
+            ISP_ENS20=$(ask "ISP ens20 (->HQ)" "$ISP_ENS20")
+            ISP_ENS21=$(ask "ISP ens21 (->BR)" "$ISP_ENS21")
             ;;
         HQ-RTR)
-            HQ_RTR_ENS19=$(ask "HQ-RTR ens19 (→ISP)" "$HQ_RTR_ENS19")
+            HQ_RTR_ENS19=$(ask "HQ-RTR ens19 (->ISP)" "$HQ_RTR_ENS19")
             HQ_RTR_VLAN100=$(ask "HQ-RTR vlan100" "$HQ_RTR_VLAN100")
             HQ_RTR_VLAN200=$(ask "HQ-RTR vlan200" "$HQ_RTR_VLAN200")
             HQ_RTR_VLAN999=$(ask "HQ-RTR vlan999" "$HQ_RTR_VLAN999")
@@ -71,14 +56,14 @@ main() {
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         BR-RTR)
-            BR_RTR_ENS19=$(ask "BR-RTR ens19 (→ISP)" "$BR_RTR_ENS19")
-            BR_RTR_ENS20=$(ask "BR-RTR ens20 (→BR-FW)" "$BR_RTR_ENS20")
+            BR_RTR_ENS19=$(ask "BR-RTR ens19 (->ISP)" "$BR_RTR_ENS19")
+            BR_RTR_ENS20=$(ask "BR-RTR ens20 (->BR-FW)" "$BR_RTR_ENS20")
             BR_RTR_GRE=$(ask "BR-RTR gre1" "$BR_RTR_GRE")
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         BR-FW)
-            BR_FW_ENS19=$(ask "BR-FW ens19 (→BR-RTR)" "$BR_FW_ENS19")
-            BR_FW_ENS20=$(ask "BR-FW ens20 (→BR-SRV)" "$BR_FW_ENS20")
+            BR_FW_ENS19=$(ask "BR-FW ens19 (->BR-RTR)" "$BR_FW_ENS19")
+            BR_FW_ENS20=$(ask "BR-FW ens20 (->BR-SRV)" "$BR_FW_ENS20")
             ;;
         HQ-SRV)
             HQ_SRV_ADDR=$(ask "HQ-SRV ens19" "$HQ_SRV_ADDR")
@@ -94,9 +79,6 @@ main() {
     esac
     TZ=$(ask "Часовой пояс" "$TZ")
 
-    # ============================================================
-    # 5. Функции настройки etcnet
-    # ============================================================
     _opts_static() {
         cat > "$1/options" <<EOF
 TYPE=eth
@@ -254,12 +236,8 @@ EOF
         hist "nano /etc/openssh/sshd_config"
     }
 
-    # ============================================================
-    # 6. Setup OSPF (FRR)
-    # ============================================================
     setup_ospf() {
         local role="$1"
-
         [ -f /etc/frr/daemons ] || { echo "✗ /etc/frr/daemons не найден"; return 1; }
         sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons
         run "systemctl enable --now frr"
@@ -276,10 +254,10 @@ EOF
 
         case "$role" in
             hq-rtr)
-                run "vtysh -c 'conf t' -c 'router ospf' -c 'passive-interface default' -c 'network 10.10.10.0/30 area 0' -c 'network 192.168.100.0/27 area 0' -c 'network 192.168.200.0/28 area 0' -c 'int gre1' -c 'no ip ospf passive' -c 'ip ospf authentication message-digest' -c 'ip ospf message-digest-key 1 md5 $OSPF_PASS' -c 'ip ospf network point-to-point' -c 'end'"
+                run "vtysh -c 'conf t' -c 'router ospf' -c 'passive-interface default' -c 'network 10.10.10.0/30 area 0' -c 'network 192.168.100.0/27 area 0' -c 'network 192.168.200.0/28 area 0' -c 'int gre1' -c 'no ip ospf passive' -c 'ip ospf authentication message-digest' -c 'ip ospf message-digest-key 1 md5 $OSPF_PASS' -c 'ip ospf network point-to-point' -c 'ip ospf mtu-ignore' -c 'end'"
                 ;;
             br-rtr)
-                run "vtysh -c 'conf t' -c 'router ospf' -c 'passive-interface default' -c 'network 10.10.10.0/30 area 0' -c 'network 192.168.30.0/30 area 0' -c 'int gre1' -c 'no ip ospf passive' -c 'ip ospf authentication message-digest' -c 'ip ospf message-digest-key 1 md5 $OSPF_PASS' -c 'ip ospf network point-to-point' -c 'int ens20' -c 'no ip ospf passive' -c 'ip ospf network point-to-point' -c 'end'"
+                run "vtysh -c 'conf t' -c 'router ospf' -c 'passive-interface default' -c 'network 10.10.10.0/30 area 0' -c 'network 192.168.30.0/30 area 0' -c 'int gre1' -c 'no ip ospf passive' -c 'ip ospf authentication message-digest' -c 'ip ospf message-digest-key 1 md5 $OSPF_PASS' -c 'ip ospf network point-to-point' -c 'ip ospf mtu-ignore' -c 'int ens20' -c 'no ip ospf passive' -c 'ip ospf network point-to-point' -c 'end'"
                 ;;
             br-fw)
                 run "vtysh -c 'conf t' -c 'router ospf' -c 'passive-interface default' -c 'network 192.168.30.0/30 area 0' -c 'network 192.168.0.0/28 area 0' -c 'int ens19' -c 'no ip ospf passive' -c 'ip ospf network point-to-point' -c 'end'"
@@ -288,9 +266,6 @@ EOF
         run "vtysh -c 'write memory'"
     }
 
-    # ============================================================
-    # 7. OVS-мост (HQ-RTR)
-    # ============================================================
     setup_ovs_bridge() {
         run "systemctl enable --now openvswitch"
         sleep 2
@@ -308,9 +283,6 @@ EOF
         hist "ovs-vsctl show"
     }
 
-    # ============================================================
-    # 8. DHCP Server (HQ-RTR)
-    # ============================================================
     setup_dhcp() {
         mkdir -p /var/lib/dhcpd
         touch /var/lib/dhcpd/dhcpd.leases
@@ -318,6 +290,7 @@ EOF
 
         cat > /etc/dhcp/dhcpd.conf <<EOF
 ddns-update-style none;
+authoritative;
 subnet $HQ_CLI_NET netmask 255.255.255.240 {
     option routers 192.168.200.1;
     option subnet-mask 255.255.255.240;
@@ -327,48 +300,58 @@ subnet $HQ_CLI_NET netmask 255.255.255.240 {
 }
 EOF
         echo 'DHCPDARGS=vlan200' > /etc/sysconfig/dhcpd
-        for i in {1..10}; do
+
+        for i in {1..15}; do
             ip link show vlan200 &>/dev/null && break
             sleep 1
         done
+        ip link set vlan200 up 2>/dev/null || true
+
+        if ! dhcpd -t -cf /etc/dhcp/dhcpd.conf 2>&1 | tee /tmp/dhcp_test >/dev/null; then
+            echo "✗ Ошибка в dhcpd.conf:"
+            cat /tmp/dhcp_test
+            return 1
+        fi
+
         run "systemctl enable --now dhcpd"
         hist "nano /etc/dhcp/dhcpd.conf"
     }
 
-    # ============================================================
-    # 9. BIND (HQ-SRV)
-    # ============================================================
     setup_dns() {
         echo "nameserver 8.8.8.8" > /etc/resolv.conf
         local BDIR="/var/lib/bind/etc"
         mkdir -p "$BDIR/zone"
 
-        cat > "$BDIR/zone/localhost.rev" <<EOF
+        if [ ! -f "$BDIR/rfc1912.conf" ]; then
+            echo 'zone "localhost" IN { type master; file "'"$BDIR"'/zone/localhost.zone"; };' > "$BDIR/rfc1912.conf"
+            echo 'zone "127.in-addr.arpa" IN { type master; file "'"$BDIR"'/zone/127.zone"; };' >> "$BDIR/rfc1912.conf"
+            echo 'zone "0.in-addr.arpa" IN { type master; file "'"$BDIR"'/zone/0.zone"; };' >> "$BDIR/rfc1912.conf"
+            echo 'zone "255.in-addr.arpa" IN { type master; file "'"$BDIR"'/zone/255.zone"; };' >> "$BDIR/rfc1912.conf"
+        fi
+
+        cat > "$BDIR/zone/localhost.zone" <<EOF
 \$TTL 1D
-@   IN  SOA localhost. root.localhost. (
-        2024010101 12H 1H 1W 1D )
+@   IN  SOA localhost. root.localhost. ( 2024010101 12H 1H 1W 1D )
+    IN  NS  localhost.
+    IN  A   127.0.0.1
+EOF
+        cat > "$BDIR/zone/127.zone" <<EOF
+\$TTL 1D
+@   IN  SOA localhost. root.localhost. ( 2024010101 12H 1H 1W 1D )
     IN  NS  localhost.
 1   IN  PTR localhost.
 EOF
-        cat > "$BDIR/zone/127.in-addr.arpa" <<EOF
+        cat > "$BDIR/zone/0.zone" <<EOF
 \$TTL 1D
-@   IN  SOA localhost. root.localhost. (
-        2024010101 12H 1H 1W 1D )
-    IN  NS  localhost.
-1   IN  PTR localhost.
-EOF
-        cat > "$BDIR/zone/0.in-addr.arpa" <<EOF
-\$TTL 1D
-@   IN  SOA localhost. root.localhost. (
-        2024010101 12H 1H 1W 1D )
+@   IN  SOA localhost. root.localhost. ( 2024010101 12H 1H 1W 1D )
     IN  NS  localhost.
 EOF
-        cat > "$BDIR/zone/255.in-addr.arpa" <<EOF
+        cat > "$BDIR/zone/255.zone" <<EOF
 \$TTL 1D
-@   IN  SOA localhost. root.localhost. (
-        2024010101 12H 1H 1W 1D )
+@   IN  SOA localhost. root.localhost. ( 2024010101 12H 1H 1W 1D )
     IN  NS  localhost.
 EOF
+
         cat > "$BDIR/options.conf" <<EOF
 options {
     directory "$BDIR";
@@ -376,18 +359,14 @@ options {
     allow-query { any; };
     forwarders { 8.8.8.8; };
     listen-on { any; };
-    listen-on-v6 { any; };
 };
+include "$BDIR/rfc1912.conf";
 
-zone "." IN { type hint; file "/etc/bind/db.root"; };
-zone "localhost" IN { type master; file "$BDIR/zone/localhost.rev"; };
-zone "127.in-addr.arpa" IN { type master; file "$BDIR/zone/127.in-addr.arpa"; };
-zone "0.in-addr.arpa" IN { type master; file "$BDIR/zone/0.in-addr.arpa"; };
-zone "255.in-addr.arpa" IN { type master; file "$BDIR/zone/255.in-addr.arpa"; };
 zone "au-team.irpo" { type master; file "$BDIR/zone/au-team.irpo"; };
 zone "100.168.192.in-addr.arpa" { type master; file "$BDIR/zone/100.168.192.rev"; };
 zone "0.168.192.in-addr.arpa" { type master; file "$BDIR/zone/0.168.192.rev"; };
 EOF
+
         cat > "$BDIR/zone/au-team.irpo" <<EOF
 \$TTL 1D
 @   IN  SOA ns.au-team.irpo. admin.au-team.irpo. (
@@ -419,12 +398,18 @@ EOF
 1   IN  PTR br-fw.au-team.irpo.
 2   IN  PTR br-srv.au-team.irpo.
 EOF
+
+        chown root:named "$BDIR/zone/"* 2>/dev/null || chown root:bind "$BDIR/zone/"* 2>/dev/null || true
+        chmod 640 "$BDIR/zone/"*
+
         if [ -f /etc/named.conf ]; then
             if ! grep -q 'include "/var/lib/bind/etc/options.conf";' /etc/named.conf; then
                 echo 'include "/var/lib/bind/etc/options.conf";' >> /etc/named.conf
             fi
         fi
-        named-checkconf /etc/named.conf 2>/dev/null || true
+        
+        named-checkconf /etc/named.conf || { echo "✗ named-checkconf failed"; return 1; }
+        named-checkconf -z /etc/named.conf || { echo "✗ named-checkconf -z failed"; return 1; }
         run "systemctl enable --now bind"
         echo "nameserver 192.168.100.2" > /etc/resolv.conf
         hist "nano /var/lib/bind/etc/options.conf"
@@ -435,9 +420,6 @@ EOF
         hist "timedatectl set-timezone $TZ"
     }
 
-    # ============================================================
-    # 10. Setup-функции по машинам
-    # ============================================================
     setup_isp() {
         run "hostnamectl set-hostname isp.au-team.irpo"
         setup_iface_static ens20 "$ISP_ENS20"
@@ -517,9 +499,6 @@ EOF
         setup_timezone
     }
 
-    # ============================================================
-    # 11. Запуск настройки
-    # ============================================================
     case "$MACHINE" in
         ISP)      setup_isp ;;
         HQ-RTR)   setup_hq_rtr ;;
@@ -530,9 +509,6 @@ EOF
         HQ-CLI)   setup_hq_cli ;;
     esac
 
-    # ============================================================
-    # 12. Итоговая диагностика
-    # ============================================================
     echo ""
     echo "========== ИТОГ =========="
     ip -br a 2>/dev/null || true
@@ -541,30 +517,21 @@ EOF
         vtysh -c 'show ip ospf neighbor' 2>/dev/null || true
     fi
 
-    # ============================================================
-    # 13. Правильная очистка истории
-    # ============================================================
     echo ""
     echo "Сохранение истории и очистка команды запуска..."
     
-    # Принудительно сохраняем текущую историю
     history -a 
     
-    # Удаляем только команды запуска (curl, source) из файла истории
     if [ -f "$HOME/.bash_history" ]; then
         sed -i -E '/(curl|clck\.ru|source[[:space:]]+<\(|exam\.sh|githubusercontent|ini\.sh|bash[[:space:]]+<)/d' "$HOME/.bash_history"
     fi
     
-    # Очищаем память и загружаем обновленную историю из файла
     history -c
     history -r "$HOME/.bash_history"
 
-    # ============================================================
-    # 14. ПРИНУДИТЕЛЬНАЯ ПЕРЕЗАГРУЗКА (Без вопросов)
-    # ============================================================
     echo ""
     echo "════════════════════════════════════════════════════════════════"
-    echo " НАСТРОЙКА ЗАВЕРШЕНА. СИСТЕМА БУДЕТ ПЕРЕЗАГРУЖЕНА ЧЕРЕЗ 3 СЕКУНДЫ."
+    echo " НАСТРОЙКА ЗАВЕРШЕНА. СИСТЕМА БУДЕТ ПЕРЕЗАГРУЖЕНА ЧЕРЕЗ 3 СЕКУНД."
     echo "════════════════════════════════════════════════════════════════"
     sync
     sleep 3

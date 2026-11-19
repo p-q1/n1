@@ -1,6 +1,14 @@
-apt-get update && apt-get install -y NetworkManager NetworkManager-tui bind dhcp-server openssh-server frr iptables
-
-=====
+apt-get update && aapt-get update && apt-get install -y iproute2 iptables bind bind-utils dhcp-server frr openssh-server sudo systemd-timesyncd iputils procps openvswitch
+=========
+Мост (vmbr)	Назначение	Подсеть	К каким VM подключать (net-интерфейсы)
+vmbr0	Выход в интернет (NAT)	Ваша внешняя сеть	ISP: net0
+vmbr1	ISP ↔ HQ-RTR	172.16.30.0/28	ISP: net1, HQ-RTR: net0
+vmbr2	ISP ↔ BR-RTR	172.16.40.0/28	ISP: net2, BR-RTR: net0
+vmbr3	HQ-RTR ↔ HQ-SRV	192.168.100.0/27	HQ-RTR: net1 (или vlan100), HQ-SRV: net0
+vmbr4	HQ-RTR ↔ HQ-CLI	192.168.200.0/28	HQ-RTR: net2 (или vlan200), HQ-CLI: net0
+vmbr5	BR-RTR ↔ BR-FW	192.168.30.0/30	BR-RTR: net1, BR-FW: net0
+vmbr6	BR-FW ↔ BR-SRV	192.168.0.0/28	BR-FW: net1, BR-SRV: net0
+=========
 1: bash <(curl -sL clck.ru/3X4yLT)
 2: bash <(curl -sL clck.ru/3X4yQN)
 3: bash <(curl -sL clck.ru/3X6E7H)

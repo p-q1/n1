@@ -242,83 +242,60 @@ EOF
         sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons
 
         if [ "$role" = "hq-rtr" ]; then
-            cat > /etc/frr/frr.conf <<EOF
-frr version 8.0
-frr defaults traditional
-hostname hq-rtr
-no ipv6 forwarding
-!
-interface gre1
- ip ospf authentication message-digest
- ip ospf message-digest-key 1 md5 $OSPF_PASS
- ip ospf network point-to-point
- ip ospf mtu-ignore
- no ip ospf passive
-!
+            cat > /tmp/ospf.cfg <<EOF
+conf t
 router ospf
- ospf router-id 10.10.10.1
- passive-interface default
- network 10.10.10.0/30 area 0
- network 192.168.100.0/27 area 0
- network 192.168.200.0/28 area 0
-!
-line vty
-!
+passive-interface default
+network 10.10.10.0/30 area 0
+network 192.168.100.0/27 area 0
+network 192.168.200.0/28 area 0
+int gre1
+no ip ospf passive
+ip ospf authentication message-digest
+ip ospf message-digest-key 1 md5 $OSPF_PASS
+ip ospf network point-to-point
+ip ospf mtu-ignore
+end
+write memory
 EOF
         elif [ "$role" = "br-rtr" ]; then
-            cat > /etc/frr/frr.conf <<EOF
-frr version 8.0
-frr defaults traditional
-hostname br-rtr
-no ipv6 forwarding
-!
-interface gre1
- ip ospf authentication message-digest
- ip ospf message-digest-key 1 md5 $OSPF_PASS
- ip ospf network point-to-point
- ip ospf mtu-ignore
- no ip ospf passive
-!
-interface ens20
- ip ospf network point-to-point
- no ip ospf passive
-!
+            cat > /tmp/ospf.cfg <<EOF
+conf t
 router ospf
- ospf router-id 10.10.10.2
- passive-interface default
- network 10.10.10.0/30 area 0
- network 192.168.30.0/30 area 0
-!
-line vty
-!
+passive-interface default
+network 10.10.10.0/30 area 0
+network 192.168.30.0/30 area 0
+int gre1
+no ip ospf passive
+ip ospf authentication message-digest
+ip ospf message-digest-key 1 md5 $OSPF_PASS
+ip ospf network point-to-point
+ip ospf mtu-ignore
+int ens20
+no ip ospf passive
+ip ospf network point-to-point
+end
+write memory
 EOF
         elif [ "$role" = "br-fw" ]; then
-            cat > /etc/frr/frr.conf <<EOF
-frr version 8.0
-frr defaults traditional
-hostname br-fw
-no ipv6 forwarding
-!
-interface ens19
- ip ospf network point-to-point
- no ip ospf passive
-!
+            cat > /tmp/ospf.cfg <<EOF
+conf t
 router ospf
- ospf router-id 192.168.30.2
- passive-interface default
- network 192.168.30.0/30 area 0
- network 192.168.0.0/28 area 0
-!
-line vty
-!
+passive-interface default
+network 192.168.30.0/30 area 0
+network 192.168.0.0/28 area 0
+int ens19
+no ip ospf passive
+ip ospf network point-to-point
+end
+write memory
 EOF
         fi
-        chown frr:frr /etc/frr/frr.conf
-        chmod 640 /etc/frr/frr.conf
         run "systemctl enable --now frr"
         run "systemctl restart frr"
         sleep 3
-        hist "nano /etc/frr/frr.conf"
+        run "vtysh -f /tmp/ospf.cfg"
+        hist "cat /tmp/ospf.cfg"
     }
 
     setup_ovs_bridge() {
@@ -339,15 +316,14 @@ EOF
     }
 
     setup_dhcp() {
-        mkdir -p /etc/dhcp
-        mkdir -p /var/lib/dhcpd
-        touch /var/lib/dhcpd/dhcpd.leases
-        chown -R dhcpd:dhcpd /var/lib/dhcpd 2>/dev/null || chown -R root:root /var/lib/dhcpd
+        mkdir -p /etc/dhcp /var/lib/dhcpd /var/lib/dhcp
+        touch /var/lib/dhcpd/dhcpd.leases /var/lib/dhcp/dhcpd.leases
+        chown -R dhcpd:dhcpd /var/lib/dhcpd /var/lib/dhcp 2>/dev/null || true
 
         cat > /etc/dhcp/dhcpd.conf <<EOF
 ddns-update-style none;
 authoritative;
-subnet $HQ_CLI_NET netmask 255.255.255.240 {
+subnet 192.168.200.0 netmask 255.255.255.240 {
     option routers 192.168.200.1;
     option subnet-mask 255.255.255.240;
     option domain-name "au-team.irpo";
@@ -356,20 +332,11 @@ subnet $HQ_CLI_NET netmask 255.255.255.240 {
 }
 EOF
         echo 'DHCPDARGS=vlan200' > /etc/sysconfig/dhcpd
-
-        for i in {1..15}; do
-            ip link show vlan200 &>/dev/null && break
-            sleep 1
-        done
+        
         ip link set vlan200 up 2>/dev/null || true
         ip addr add 192.168.200.1/28 dev vlan200 2>/dev/null || true
-
-        if ! dhcpd -t -cf /etc/dhcp/dhcpd.conf 2>&1 | tee /tmp/dhcp_test >/dev/null; then
-            echo "Ошибка в dhcpd.conf:"
-            cat /tmp/dhcp_test
-            return 1
-        fi
-
+        
+        run "dhcpd -t -cf /etc/dhcp/dhcpd.conf"
         run "systemctl enable --now dhcpd"
         hist "nano /etc/dhcp/dhcpd.conf"
         hist "nano /etc/sysconfig/dhcpd"
@@ -380,10 +347,12 @@ EOF
         local BDIR="/var/lib/bind/etc"
         mkdir -p "$BDIR/zone"
 
-        if [ ! -s /etc/rndc.key ]; then
-            rndc-confgen -a -A hmac-sha256 >/dev/null 2>&1
-            chmod 640 /etc/rndc.key
-            chown root:named /etc/rndc.key 2>/dev/null || chown root:bind /etc/rndc.key 2>/dev/null || true
+        rm -f /etc/bind/rndc.key
+        rndc-confgen -a -c /etc/bind/rndc.key >/dev/null 2>&1
+        if [ -f /etc/bind/rndc.key ]; then
+            sed -i 's/^#//g' /etc/bind/rndc.key
+            chown root:named /etc/bind/rndc.key 2>/dev/null || true
+            chmod 640 /etc/bind/rndc.key
         fi
 
         if [ -f /etc/bind/options.conf ]; then
@@ -442,13 +411,9 @@ EOF
             if ! grep -q 'include "/var/lib/bind/etc/zones.conf";' /etc/named.conf; then
                 echo 'include "/var/lib/bind/etc/zones.conf";' >> /etc/named.conf
             fi
-            if ! grep -q 'include "/etc/rndc.key";' /etc/named.conf; then
-                echo 'include "/etc/rndc.key";' >> /etc/named.conf
-            fi
         fi
 
-        named-checkconf /etc/named.conf || { echo "Ошибка named-checkconf"; return 1; }
-        named-checkconf -z /etc/named.conf || { echo "Ошибка named-checkconf -z"; return 1; }
+        run "named-checkconf /etc/named.conf"
         run "systemctl enable --now bind"
         echo "nameserver 192.168.100.2" > /etc/resolv.conf
         hist "nano /etc/named.conf"

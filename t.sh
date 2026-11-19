@@ -1,11 +1,9 @@
 #!/bin/bash
 # t.sh — исправленная версия для Alt Server (минимальная сборка)
-# Запускать через: source <(curl -sL ...) или просто bash t.sh
-# Скрипт не скачивает пакеты, только настраивает уже установленные.
+# Запуск: bash t.sh   (или source <(curl ...) для сохранения истории)
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-    echo "Внимание: скрипт лучше запускать через 'source', чтобы история команд сохранялась."
-    # Не выходим, разрешаем прямой запуск.
+    echo "Совет: запускайте через 'source', чтобы команды попадали в историю."
 fi
 
 main() {
@@ -14,27 +12,25 @@ main() {
     # ============================================================
     # 0. Проверка утилит
     # ============================================================
-    local REQUIRED_CMDS=(ip iptables sysctl hostnamectl timedatectl useradd usermod chpasswd visudo sshd dhcpd named-checkconf named-checkzone vtysh curl sed grep awk cat echo mkdir cp chmod chown ln systemctl journalctl ping ss)
+    local REQUIRED=(ip iptables sysctl hostnamectl timedatectl useradd usermod \
+                    chpasswd sshd curl sed grep awk cat echo mkdir cp chmod chown \
+                    ln systemctl ping ss)
     local MISSING=()
-    local cmd
-    for cmd in "${REQUIRED_CMDS[@]}"; do
-        if ! command -v "$cmd" &>/dev/null; then
-            MISSING+=("$cmd")
-        fi
+    local c
+    for c in "${REQUIRED[@]}"; do
+        command -v "$c" &>/dev/null || MISSING+=("$c")
     done
     if [ ${#MISSING[@]} -gt 0 ]; then
         echo "══════════════════════════════════════════════════════════════"
-        echo " ОШИБКА: отсутствуют необходимые утилиты:"
-        printf ' - %s\n' "${MISSING[@]}"
-        echo ""
-        echo " Установите пакеты вручную:"
-        echo " apt-get update && apt-get install -y \\"
-        echo " iproute2 iptables bind bind-utils dhcp-server frr \\"
-        echo " openssh-server sudo systemd-timesyncd iputils procps"
+        echo " ОШИБКА: не найдены утилиты:"
+        printf '  - %s\n' "${MISSING[@]}"
+        echo " Установите: apt-get update && apt-get install -y \\"
+        echo "   iproute2 iptables bind bind-utils dhcp-server frr \\"
+        echo "   openssh-server sudo systemd-timesyncd iputils procps openvswitch"
         echo "══════════════════════════════════════════════════════════════"
         return 1
     fi
-    echo "Все необходимые утилиты найдены. Продолжаем..."
+    echo "✓ Все утилиты найдены"
 
     # ============================================================
     # 1. Параметры по умолчанию
@@ -42,37 +38,28 @@ main() {
     local ISP_ENS20="172.16.30.1/28"
     local ISP_ENS21="172.16.40.1/28"
     local HQ_RTR_ENS19="172.16.30.2/28"
-    local HQ_RTR_ENS20="192.168.100.1/27"
-    local HQ_RTR_ENS21="192.168.200.1/28"
+    local HQ_RTR_VLAN100="192.168.100.1/27"
+    local HQ_RTR_VLAN200="192.168.200.1/28"
+    local HQ_RTR_VLAN999="192.168.90.1/29"
     local HQ_RTR_GRE="10.10.10.1/30"
     local BR_RTR_ENS19="172.16.40.2/28"
     local BR_RTR_ENS20="192.168.30.1/30"
     local BR_RTR_GRE="10.10.10.2/30"
     local BR_FW_ENS19="192.168.30.2/30"
     local BR_FW_ENS20="192.168.0.1/28"
-    local HQ_SRV="192.168.100.2/27"
-    local BR_SRV="192.168.0.2/28"
+    local HQ_SRV_ADDR="192.168.100.2/27"
+    local BR_SRV_ADDR="192.168.0.2/28"
     local HQ_CLI_NET="192.168.200.0/28"
     local SSH_PORT="2027"
     local OSPF_PASS="P@ssw0rd"
     local TZ="Europe/Moscow"
 
     # ============================================================
-    # 2. Утилиты
+    # 2. Хелперы
     # ============================================================
-    ask() {
-        local p="$1" d="$2" v
-        read -r -p "$p [$d]: " v
-        echo "${v:-$d}"
-    }
-    run() {
-        local cmd="$1"
-        eval "$cmd"
-        history -s "$cmd" 2>/dev/null || true
-    }
-    hist() {
-        history -s "$1" 2>/dev/null || true
-    }
+    ask() { local p="$1" d="$2" v; read -r -p "$p [$d]: " v; echo "${v:-$d}"; }
+    run() { eval "$1"; history -s "$1" 2>/dev/null || true; }
+    hist() { history -s "$1" 2>/dev/null || true; }
 
     # ============================================================
     # 3. Выбор машины
@@ -95,10 +82,11 @@ main() {
             ;;
         HQ-RTR)
             HQ_RTR_ENS19=$(ask "HQ-RTR ens19 (→ISP)" "$HQ_RTR_ENS19")
-            HQ_RTR_ENS20=$(ask "HQ-RTR vlan100" "$HQ_RTR_ENS20")
-            HQ_RTR_ENS21=$(ask "HQ-RTR vlan200" "$HQ_RTR_ENS21")
+            HQ_RTR_VLAN100=$(ask "HQ-RTR vlan100" "$HQ_RTR_VLAN100")
+            HQ_RTR_VLAN200=$(ask "HQ-RTR vlan200" "$HQ_RTR_VLAN200")
+            HQ_RTR_VLAN999=$(ask "HQ-RTR vlan999" "$HQ_RTR_VLAN999")
             HQ_RTR_GRE=$(ask "HQ-RTR gre1" "$HQ_RTR_GRE")
-            SSH_PORT=$(ask "Порт SSH (для BR-RTR)" "$SSH_PORT")
+            SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         BR-RTR)
             BR_RTR_ENS19=$(ask "BR-RTR ens19 (→ISP)" "$BR_RTR_ENS19")
@@ -111,11 +99,11 @@ main() {
             BR_FW_ENS20=$(ask "BR-FW ens20 (→BR-SRV)" "$BR_FW_ENS20")
             ;;
         HQ-SRV)
-            HQ_SRV=$(ask "HQ-SRV vlan100" "$HQ_SRV")
+            HQ_SRV_ADDR=$(ask "HQ-SRV ens19" "$HQ_SRV_ADDR")
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         BR-SRV)
-            BR_SRV=$(ask "BR-SRV" "$BR_SRV")
+            BR_SRV_ADDR=$(ask "BR-SRV ens19" "$BR_SRV_ADDR")
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         HQ-CLI)
@@ -125,42 +113,11 @@ main() {
     TZ=$(ask "Часовой пояс" "$TZ")
 
     # ============================================================
-    # 5. Хелперы настройки (etcnet)
+    # 5. Функции настройки etcnet
+    #    ВАЖНО: options должен содержать ПОЛНЫЙ блок из гайда
     # ============================================================
-    setup_iface_static() {
-        local iface="$1" addr="$2" gw="${3:-}"
-        mkdir -p "/etc/net/ifaces/$iface"
-        cat > "/etc/net/ifaces/$iface/options" <<EOF
-BOOTPROTO=static
-SYSTEMD_BOOTPROTO=static
-EOF
-        echo "$addr" > "/etc/net/ifaces/$iface/ipv4address"
-        if [ -n "$gw" ]; then
-            echo "default via $gw" > "/etc/net/ifaces/$iface/ipv4route"
-        fi
-        hist "nano /etc/net/ifaces/$iface/ipv4address"
-        hist "systemctl restart network"
-    }
-
-    setup_iface_trunk() {
-        local iface="$1"
-        mkdir -p "/etc/net/ifaces/$iface"
-        cat > "/etc/net/ifaces/$iface/options" <<EOF
-TYPE=eth
-BOOTPROTO=static
-CONFIG_IPV4=no
-ONBOOT=yes
-DISABLED=no
-NM_CONTROLLED=no
-SYSTEMD_CONTROLLED=no
-EOF
-        hist "nano /etc/net/ifaces/$iface/options"
-    }
-
-    setup_iface_vlan() {
-        local iface="$1" parent="$2" vid="$3" addr="$4" gw="${5:-}"
-        mkdir -p "/etc/net/ifaces/$iface"
-        cat > "/etc/net/ifaces/$iface/options" <<EOF
+    _opts_static() {
+        cat > "$1/options" <<EOF
 TYPE=eth
 BOOTPROTO=static
 CONFIG_IPV4=yes
@@ -169,17 +126,9 @@ DISABLED=no
 NM_CONTROLLED=no
 SYSTEMD_CONTROLLED=no
 EOF
-        echo "$addr" > "/etc/net/ifaces/$iface/ipv4address"
-        if [ -n "$gw" ]; then
-            echo "default via $gw" > "/etc/net/ifaces/$iface/ipv4route"
-        fi
-        hist "nano /etc/net/ifaces/$iface/ipv4address"
     }
-
-    setup_iface_vlan_dhcp() {
-        local iface="$1" parent="$2" vid="$3"
-        mkdir -p "/etc/net/ifaces/$iface"
-        cat > "/etc/net/ifaces/$iface/options" <<EOF
+    _opts_dhcp() {
+        cat > "$1/options" <<EOF
 TYPE=eth
 BOOTPROTO=dhcp
 CONFIG_IPV4=yes
@@ -188,13 +137,69 @@ DISABLED=no
 NM_CONTROLLED=no
 SYSTEMD_CONTROLLED=no
 EOF
+    }
+    _opts_noip() {
+        cat > "$1/options" <<EOF
+TYPE=eth
+BOOTPROTO=static
+CONFIG_IPV4=no
+ONBOOT=yes
+DISABLED=no
+NM_CONTROLLED=no
+SYSTEMD_CONTROLLED=no
+EOF
+    }
+
+    # Статический IP + шлюз
+    setup_iface_static() {
+        local iface="$1" addr="$2" gw="${3:-}"
+        local d="/etc/net/ifaces/$iface"
+        mkdir -p "$d"
+        _opts_static "$d"
+        echo "$addr" > "$d/ipv4address"
+        if [ -n "$gw" ]; then
+            echo "default via $gw" > "$d/ipv4route"
+        else
+            rm -f "$d/ipv4route"
+        fi
+        hist "nano /etc/net/ifaces/$iface/ipv4address"
         hist "nano /etc/net/ifaces/$iface/options"
     }
 
+    # Транковый интерфейс (без IP) — для OVS
+    setup_iface_trunk() {
+        local iface="$1"
+        local d="/etc/net/ifaces/$iface"
+        mkdir -p "$d"
+        _opts_noip "$d"
+        hist "nano /etc/net/ifaces/$iface/options"
+    }
+
+    # VLAN-интерфейс с IP (для OVS-схемы)
+    setup_iface_vlan_ip() {
+        local iface="$1" addr="$2"
+        local d="/etc/net/ifaces/$iface"
+        mkdir -p "$d"
+        _opts_static "$d"
+        echo "$addr" > "$d/ipv4address"
+        hist "nano /etc/net/ifaces/$iface/ipv4address"
+    }
+
+    # DHCP-интерфейс (для HQ-CLI)
+    setup_iface_dhcp() {
+        local iface="$1"
+        local d="/etc/net/ifaces/$iface"
+        mkdir -p "$d"
+        _opts_dhcp "$d"
+        hist "nano /etc/net/ifaces/$iface/options"
+    }
+
+    # GRE-туннель
     setup_iface_gre() {
         local iface="$1" local_ip="$2" remote_ip="$3" addr="$4"
-        mkdir -p "/etc/net/ifaces/$iface"
-        cat > "/etc/net/ifaces/$iface/options" <<EOF
+        local d="/etc/net/ifaces/$iface"
+        mkdir -p "$d"
+        cat > "$d/options" <<EOF
 TUNLOCAL=$local_ip
 TUNREMOTE=$remote_ip
 TUNTYPE=gre
@@ -204,24 +209,61 @@ TUNMTU=1476
 TUNOPTIONS='ttl 64'
 DISABLE=no
 EOF
-        echo "$addr peer $remote_ip" > "/etc/net/ifaces/$iface/ipv4address"
+        echo "$addr peer $remote_ip" > "$d/ipv4address"
         hist "nano /etc/net/ifaces/$iface/ipv4address"
+        hist "nano /etc/net/ifaces/$iface/options"
     }
 
-    setup_timezone() {
-        if ! timedatectl set-timezone "$TZ" 2>/dev/null; then
-            ln -sf "/usr/share/zoneinfo/$TZ" /etc/localtime
+    # ============================================================
+    # 6. Перезапуск сети с диагностикой
+    # ============================================================
+    restart_network() {
+        echo ">>> systemctl restart network"
+        if systemctl restart network 2>&1; then
+            echo "✓ network перезапущен"
+        else
+            echo "✗ ОШИБКА: network не перезапустился"
+            journalctl -u network -n 30 --no-pager 2>/dev/null || true
         fi
+        sleep 1
+        echo ">>> ip -br a"
+        ip -br a
     }
 
+    # ============================================================
+    # 7. Включение IP-форвардинга (нужно для NAT)
+    # ============================================================
+    enable_ip_forward() {
+        for f in /etc/net/sysctl.conf /etc/sysctl.conf; do
+            if [ -f "$f" ] && grep -q '^[[:space:]]*net.ipv4.ip_forward' "$f"; then
+                sed -i -E 's/^[[:space:]]*net\.ipv4\.ip_forward.*/net.ipv4.ip_forward = 1/' "$f"
+            elif [ -f "$f" ] || [ "$f" = "/etc/sysctl.conf" ]; then
+                echo 'net.ipv4.ip_forward = 1' >> "$f"
+            fi
+        done
+        sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+        sysctl -p /etc/net/sysctl.conf >/dev/null 2>&1 || true
+        echo "✓ net.ipv4.ip_forward=1"
+        hist "nano /etc/net/sysctl.conf"
+        hist "sysctl -p"
+    }
+
+    # ============================================================
+    # 8. NAT (iptables)
+    # ============================================================
     setup_nat() {
         local out_iface="$1"
+        enable_ip_forward
         run "iptables -t nat -A POSTROUTING -o $out_iface -j MASQUERADE"
         run "iptables -P FORWARD ACCEPT"
         run "iptables-save > /etc/sysconfig/iptables"
         run "systemctl enable --now iptables"
+        echo "✓ NAT через $out_iface"
     }
 
+    # ============================================================
+    # 9. Пользователь + sudo без пароля
+    # ============================================================
     setup_sudo_user() {
         local user="$1" uid="$2" group="$3"
         if [ -n "$uid" ]; then
@@ -236,9 +278,12 @@ EOF
         hist "useradd -u $uid -m -s /bin/bash $user"
         hist "passwd $user"
         hist "usermod -aG $group $user"
-        hist "echo '$user ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$user"
+        echo "✓ Пользователь $user + sudo NOPASSWD"
     }
 
+    # ============================================================
+    # 10. SSH hardening (порт, баннер, MaxAuthTries, AllowUsers)
+    # ============================================================
     setup_ssh() {
         local port="$1" user="$2"
         echo 'Authorized access only' > /etc/openssh/banner
@@ -253,31 +298,36 @@ Banner /etc/openssh/banner
 AllowUsers $user
 EOF
 
-        sshd -t 2>/dev/null || {
-            echo "ОШИБКА: sshd_config содержит синтаксические ошибки. Проверьте вручную."
+        if ! sshd -t 2>/tmp/sshd_err; then
+            echo "✗ ОШИБКА в sshd_config:"
+            cat /tmp/sshd_err
             return 1
-        }
+        fi
         run "systemctl restart sshd"
+        echo "✓ SSH: порт $port, AllowUsers $user, баннер установлен"
         hist "nano /etc/openssh/sshd_config"
         hist "systemctl restart sshd"
     }
 
+    # ============================================================
+    # 11. OSPF (FRR) с ожиданием vtysh
+    # ============================================================
     setup_ospf() {
         local role="$1"
 
-        # Включаем ospfd
+        [ -f /etc/frr/daemons ] || { echo "✗ /etc/frr/daemons не найден"; return 1; }
         sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons
         run "systemctl enable --now frr"
         run "systemctl restart frr"
 
-        # Ждём, пока vtysh станет доступен
+        # Ждём, пока vtysh ответит
         local i=0
-        while ! vtysh -c 'show version' &>/dev/null && [ $i -lt 10 ]; do
-            sleep 1
-            i=$((i+1))
+        while ! vtysh -c 'show version' &>/dev/null && [ $i -lt 15 ]; do
+            sleep 1; i=$((i+1))
         done
         if ! vtysh -c 'show version' &>/dev/null; then
-            echo "ОШИБКА: vtysh не отвечает после перезапуска FRR."
+            echo "✗ vtysh не отвечает — OSPF не настроен"
+            journalctl -u frr -n 30 --no-pager 2>/dev/null || true
             return 1
         fi
 
@@ -295,7 +345,6 @@ EOF
                     -c 'ip ospf message-digest-key 1 md5 $OSPF_PASS' \
                     -c 'ip ospf network point-to-point' \
                     -c 'end'"
-                run "vtysh -c 'write memory'"
                 ;;
             br-rtr)
                 run "vtysh -c 'conf t' \
@@ -312,7 +361,6 @@ EOF
                     -c 'no ip ospf passive' \
                     -c 'ip ospf network point-to-point' \
                     -c 'end'"
-                run "vtysh -c 'write memory'"
                 ;;
             br-fw)
                 run "vtysh -c 'conf t' \
@@ -324,11 +372,46 @@ EOF
                     -c 'no ip ospf passive' \
                     -c 'ip ospf network point-to-point' \
                     -c 'end'"
-                run "vtysh -c 'write memory'"
                 ;;
         esac
+        run "vtysh -c 'write memory'"
+        echo "✓ OSPF настроен ($role)"
     }
 
+    # ============================================================
+    # 12. OVS-мост (только HQ-RTR)
+    # ============================================================
+    setup_ovs_bridge() {
+        if ! command -v ovs-vsctl &>/dev/null; then
+            echo "✗ ovs-vsctl не найден. Установите openvswitch."
+            return 1
+        fi
+        run "systemctl enable --now openvswitch"
+        sleep 1
+
+        # bridge
+        ovs-vsctl --may-exist add-br hq-sw
+        # trunks (физические порты)
+        ovs-vsctl --may-exist add-port hq-sw ens20
+        ovs-vsctl --may-exist add-port hq-sw ens21
+        # internal vlan-порты
+        ovs-vsctl --may-exist add-port hq-sw vlan100 -- set Interface vlan100 type=internal
+        ovs-vsctl --may-exist add-port hq-sw vlan200 -- set Interface vlan200 type=internal
+        ovs-vsctl --may-exist add-port hq-sw vlan999 -- set Interface vlan999 type=internal
+        # access/tag
+        ovs-vsctl set Port ens20 vlan_mode=access tag=100
+        ovs-vsctl set Port ens21 vlan_mode=access tag=200
+        ovs-vsctl set Port vlan100 vlan_mode=access tag=100
+        ovs-vsctl set Port vlan200 vlan_mode=access tag=200
+        ovs-vsctl set Port vlan999 vlan_mode=access tag=999
+
+        hist "ovs-vsctl show"
+        echo "✓ OVS-мост hq-sw с VLAN 100/200/999"
+    }
+
+    # ============================================================
+    # 13. DHCP-сервер (HQ-RTR)
+    # ============================================================
     setup_dhcp() {
         cat > /etc/dhcp/dhcpd.conf <<EOF
 ddns-update-style none;
@@ -343,21 +426,27 @@ EOF
         echo 'DHCPDARGS=vlan200' > /etc/sysconfig/dhcpd
         hist "nano /etc/dhcp/dhcpd.conf"
         hist "nano /etc/sysconfig/dhcpd"
-        dhcpd -t -cf /etc/dhcp/dhcpd.conf 2>/dev/null || true
+        if command -v dhcpd &>/dev/null; then
+            dhcpd -t -cf /etc/dhcp/dhcpd.conf 2>&1 | head -5 || true
+        fi
         run "systemctl enable --now dhcpd"
+        echo "✓ DHCP настроен для $HQ_CLI_NET (vlan200)"
     }
 
+    # ============================================================
+    # 14. BIND (HQ-SRV)
+    # ============================================================
     setup_dns() {
-        # Alt Server: пакет bind, пути /var/lib/bind/etc/
         echo "nameserver 8.8.8.8" > /etc/resolv.conf
 
-        # Создаём каталоги, если их нет
-        mkdir -p /var/lib/bind/etc/zone
+        # Alt Server: bind использует /var/lib/bind/etc/
+        local BDIR="/var/lib/bind/etc"
+        [ -d "$BDIR" ] || BDIR="/etc/bind"
+        mkdir -p "$BDIR/zone"
 
-        # Основной конфиг (options.conf)
-        cat > /var/lib/bind/etc/options.conf <<EOF
+        cat > "$BDIR/options.conf" <<EOF
 options {
-    directory "/var/lib/bind/etc";
+    directory "$BDIR";
     recursion yes;
     allow-query { any; };
     forwarders { 8.8.8.8; };
@@ -365,31 +454,24 @@ options {
 
 zone "au-team.irpo" {
     type master;
-    file "/var/lib/bind/etc/zone/au-team.irpo";
+    file "$BDIR/zone/au-team.irpo";
 };
-
 zone "100.168.192.in-addr.arpa" {
     type master;
-    file "/var/lib/bind/etc/zone/100.168.192.rev";
+    file "$BDIR/zone/100.168.192.rev";
 };
-
 zone "0.168.192.in-addr.arpa" {
     type master;
-    file "/var/lib/bind/etc/zone/0.168.192.rev";
+    file "$BDIR/zone/0.168.192.rev";
 };
 EOF
 
-        # Зона прямого просмотра
-        cat > /var/lib/bind/etc/zone/au-team.irpo <<EOF
+        cat > "$BDIR/zone/au-team.irpo" <<EOF
 \$TTL 1D
 @   IN  SOA ns.au-team.irpo. admin.au-team.irpo. (
-        2024010101 ; serial
-        12H        ; refresh
-        1H         ; retry
-        1W         ; expire
-        1D )       ; minimum
+        2024010101 12H 1H 1W 1D )
     IN  NS  ns.au-team.irpo.
-ns  IN  A   192.168.100.2
+ns      IN  A   192.168.100.2
 hq-rtr  IN  A   192.168.100.1
 br-rtr  IN  A   192.168.30.1
 br-fw   IN  A   192.168.30.2
@@ -400,71 +482,87 @@ docker  IN  A   172.16.30.1
 web     IN  A   172.16.40.1
 EOF
 
-        # Обратная зона 100.168.192
-        cat > /var/lib/bind/etc/zone/100.168.192.rev <<EOF
+        cat > "$BDIR/zone/100.168.192.rev" <<EOF
 \$TTL 1D
 @   IN  SOA ns.au-team.irpo. admin.au-team.irpo. (
-        2024010101 ; serial
-        12H        ; refresh
-        1H         ; retry
-        1W         ; expire
-        1D )       ; minimum
+        2024010101 12H 1H 1W 1D )
     IN  NS  ns.au-team.irpo.
 1   IN  PTR hq-rtr.au-team.irpo.
 2   IN  PTR hq-srv.au-team.irpo.
 EOF
 
-        # Обратная зона 0.168.192
-        cat > /var/lib/bind/etc/zone/0.168.192.rev <<EOF
+        cat > "$BDIR/zone/0.168.192.rev" <<EOF
 \$TTL 1D
 @   IN  SOA ns.au-team.irpo. admin.au-team.irpo. (
-        2024010101 ; serial
-        12H        ; refresh
-        1H         ; retry
-        1W         ; expire
-        1D )       ; minimum
+        2024010101 12H 1H 1W 1D )
     IN  NS  ns.au-team.irpo.
-2   IN  PTR br-srv.au-team.irpo.
 1   IN  PTR br-fw.au-team.irpo.
-1   IN  PTR br-rtr.au-team.irpo.
+2   IN  PTR br-srv.au-team.irpo.
 EOF
 
-        # Проверка конфигурации
-        named-checkconf /var/lib/bind/etc/options.conf 2>/dev/null || true
-        named-checkzone au-team.irpo /var/lib/bind/etc/zone/au-team.irpo 2>/dev/null || true
-        named-checkzone 100.168.192.in-addr.arpa /var/lib/bind/etc/zone/100.168.192.rev 2>/dev/null || true
-        named-checkzone 0.168.192.in-addr.arpa /var/lib/bind/etc/zone/0.168.192.rev 2>/dev/null || true
+        command -v named-checkconf &>/dev/null && named-checkconf "$BDIR/options.conf" 2>&1 | head -5 || true
+        command -v named-checkzone &>/dev/null && \
+            named-checkzone au-team.irpo "$BDIR/zone/au-team.irpo" 2>&1 | head -3 || true
 
-        hist "nano /var/lib/bind/etc/options.conf"
-        hist "nano /var/lib/bind/etc/zone/au-team.irpo"
-        hist "nano /var/lib/bind/etc/zone/100.168.192.rev"
-        hist "nano /var/lib/bind/etc/zone/0.168.192.rev"
         run "systemctl enable --now bind"
+        # локальный DNS
+        echo "nameserver 192.168.100.2" > /etc/resolv.conf
+        echo "✓ BIND настроен (зона au-team.irpo, $BDIR)"
     }
 
     # ============================================================
-    # 6. Setup-функции по машинам
+    # 15. Часовой пояс
+    # ============================================================
+    setup_timezone() {
+        timedatectl set-timezone "$TZ" 2>/dev/null || ln -sf "/usr/share/zoneinfo/$TZ" /etc/localtime
+        echo "✓ TZ=$TZ"
+    }
+
+    # ============================================================
+    # 16. Setup-функции по машинам
     # ============================================================
     setup_isp() {
         run "hostnamectl set-hostname isp.au-team.irpo"
         setup_iface_static ens20 "$ISP_ENS20"
         setup_iface_static ens21 "$ISP_ENS21"
-        run "systemctl restart network"
+        restart_network
         setup_nat ens19
         setup_timezone
     }
 
     setup_hq_rtr() {
         run "hostnamectl set-hostname hq-rtr.au-team.irpo"
+
+        # 1) ens19 — статика в сторону ISP
         setup_iface_static ens19 "$HQ_RTR_ENS19" "172.16.30.1"
+
+        # 2) ens20/ens21 — trunk (без IP)
         setup_iface_trunk ens20
-        setup_iface_vlan vlan100 ens20 100 "$HQ_RTR_ENS20"
-        setup_iface_vlan vlan200 ens20 200 "$HQ_RTR_ENS21"
-        setup_iface_vlan vlan999 ens20 999 "192.168.99.1/29"
+        setup_iface_trunk ens21
+
+        # 3) OVS-мост и VLAN-интерфейсы
+        setup_ovs_bridge
+
+        # 4) etcnet для hq-sw и VLAN
+        mkdir -p /etc/net/ifaces/hq-sw
+        _opts_static /etc/net/ifaces/hq-sw
+        setup_iface_vlan_ip vlan100 "$HQ_RTR_VLAN100"
+        setup_iface_vlan_ip vlan200 "$HQ_RTR_VLAN200"
+        setup_iface_vlan_ip vlan999 "$HQ_RTR_VLAN999"
+
+        # 5) GRE
         setup_iface_gre gre1 "172.16.30.2" "172.16.40.2" "$HQ_RTR_GRE"
-        run "systemctl restart network"
+
+        restart_network
+
+        # 6) NAT + ip_forward
         setup_nat ens19
+
+        # 7) Пользователь и SSH
         setup_sudo_user net_admin "" wheel
+        setup_ssh "$SSH_PORT" net_admin
+
+        # 8) OSPF, DHCP
         setup_ospf hq-rtr
         setup_dhcp
         setup_timezone
@@ -475,9 +573,10 @@ EOF
         setup_iface_static ens19 "$BR_RTR_ENS19" "172.16.40.1"
         setup_iface_static ens20 "$BR_RTR_ENS20"
         setup_iface_gre gre1 "172.16.40.2" "172.16.30.2" "$BR_RTR_GRE"
-        run "systemctl restart network"
+        restart_network
         setup_nat ens19
         setup_sudo_user net_admin "" wheel
+        setup_ssh "$SSH_PORT" net_admin
         setup_ospf br-rtr
         setup_timezone
     }
@@ -486,7 +585,7 @@ EOF
         run "hostnamectl set-hostname br-fw.au-team.irpo"
         setup_iface_static ens19 "$BR_FW_ENS19" "192.168.30.1"
         setup_iface_static ens20 "$BR_FW_ENS20"
-        run "systemctl restart network"
+        restart_network
         setup_nat ens19
         setup_ospf br-fw
         setup_timezone
@@ -494,9 +593,8 @@ EOF
 
     setup_hq_srv() {
         run "hostnamectl set-hostname hq-srv.au-team.irpo"
-        setup_iface_trunk ens19
-        setup_iface_vlan vlan100 ens19 100 "$HQ_SRV" "192.168.100.1"
-        run "systemctl restart network"
+        setup_iface_static ens19 "$HQ_SRV_ADDR" "192.168.100.1"
+        restart_network
         setup_sudo_user sshuser 2027 wheel
         setup_ssh "$SSH_PORT" sshuser
         setup_dns
@@ -505,8 +603,8 @@ EOF
 
     setup_br_srv() {
         run "hostnamectl set-hostname br-srv.au-team.irpo"
-        setup_iface_static ens19 "$BR_SRV" "192.168.0.1"
-        run "systemctl restart network"
+        setup_iface_static ens19 "$BR_SRV_ADDR" "192.168.0.1"
+        restart_network
         setup_sudo_user sshuser 2027 wheel
         setup_ssh "$SSH_PORT" sshuser
         setup_timezone
@@ -514,14 +612,13 @@ EOF
 
     setup_hq_cli() {
         run "hostnamectl set-hostname hq-cli.au-team.irpo"
-        setup_iface_trunk ens19
-        setup_iface_vlan_dhcp vlan200 ens19 200
-        run "systemctl restart network"
+        setup_iface_dhcp ens19
+        restart_network
         setup_timezone
     }
 
     # ============================================================
-    # 7. Вызов нужной setup-функции
+    # 17. Запуск
     # ============================================================
     case "$MACHINE" in
         ISP)      setup_isp ;;
@@ -534,24 +631,40 @@ EOF
     esac
 
     # ============================================================
-    # 8. Очистка истории (по желанию)
+    # 18. Итоговая диагностика
     # ============================================================
-    local HF="${HISTFILE:-$HOME/.bash_history}"
-    history -a
-    if [ -f "$HF" ]; then
-        sed -i -E '/(curl|clck\.ru|source|exam\.sh|bash <|githubusercontent|ini\.sh)/d' "$HF"
-        sed -i -E '/^z([0-9]+|x)[[:space:]]*$/d' "$HF"
+    echo ""
+    echo "========== ИТОГ =========="
+    echo ">>> ip -br a"
+    ip -br a 2>/dev/null || true
+    echo ""
+    if command -v ss &>/dev/null; then
+        echo ">>> SSH на порту $SSH_PORT:"
+        ss -tlnp 2>/dev/null | grep ":$SSH_PORT" || echo "  (не слушает)"
     fi
-    history -c
-    history -r "$HF" 2>/dev/null || true
+    if command -v vtysh &>/dev/null; then
+        echo ">>> OSPF-соседи:"
+        vtysh -c 'show ip ospf neighbor' 2>/dev/null || echo "  (нет данных)"
+    fi
+    if command -v systemctl &>/dev/null; then
+        for svc in network sshd bind dhcpd frr iptables openvswitch; do
+            systemctl is-active "$svc" >/dev/null 2>&1 && echo "  ✓ $svc активен"
+        done
+    fi
 
     # ============================================================
-    # 9. Reboot
+    # 19. Опциональная перезагрузка
     # ============================================================
-    sync
-    echo "=== Настройка завершена. Перезагрузка через 3 секунды... ==="
-    sleep 3
-    reboot
+    echo ""
+    read -r -p "Перезагрузить сейчас? (y/N): " ans
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+        sync
+        echo "Перезагрузка через 3 сек (Ctrl+C для отмены)..."
+        sleep 3
+        reboot
+    else
+        echo "Перезагрузка отложена. Проверьте 'ip -br a' и 'systemctl status network'."
+    fi
 }
 
 main "$@"

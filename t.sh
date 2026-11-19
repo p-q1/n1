@@ -66,7 +66,7 @@ main() {
             BR_FW_ENS20=$(ask "BR-FW ens20 (->BR-SRV)" "$BR_FW_ENS20")
             ;;
         HQ-SRV)
-            HQ_SRV_ADDR=$(ask "HQ-SRV ens19" "$HQ_SRV_ADDR")
+            HQ_SRV_ADDR=$(ask "HQ-SRV vlan100" "$HQ_SRV_ADDR")
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         BR-SRV)
@@ -135,11 +135,14 @@ EOF
     }
 
     setup_iface_vlan_ip() {
-        local iface="$1" addr="$2"
+        local iface="$1" addr="$2" gw="${3:-}"
         local d="/etc/net/ifaces/$iface"
         mkdir -p "$d"
         _opts_static "$d"
         echo "$addr" > "$d/ipv4address"
+        if [ -n "$gw" ]; then
+            echo "default via $gw" > "$d/ipv4route"
+        fi
         hist "nano /etc/net/ifaces/$iface/ipv4address"
     }
 
@@ -241,61 +244,54 @@ EOF
         sed -i 's/^zebra=no/zebra=yes/' /etc/frr/daemons
         sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons
 
-        if [ "$role" = "hq-rtr" ]; then
-            cat > /tmp/ospf.cfg <<EOF
-conf t
-router ospf
-passive-interface default
-network 10.10.10.0/30 area 0
-network 192.168.100.0/27 area 0
-network 192.168.200.0/28 area 0
-int gre1
-no ip ospf passive
-ip ospf authentication message-digest
-ip ospf message-digest-key 1 md5 $OSPF_PASS
-ip ospf network point-to-point
-ip ospf mtu-ignore
-end
-write memory
-EOF
-        elif [ "$role" = "br-rtr" ]; then
-            cat > /tmp/ospf.cfg <<EOF
-conf t
-router ospf
-passive-interface default
-network 10.10.10.0/30 area 0
-network 192.168.30.0/30 area 0
-int gre1
-no ip ospf passive
-ip ospf authentication message-digest
-ip ospf message-digest-key 1 md5 $OSPF_PASS
-ip ospf network point-to-point
-ip ospf mtu-ignore
-int ens20
-no ip ospf passive
-ip ospf network point-to-point
-end
-write memory
-EOF
-        elif [ "$role" = "br-fw" ]; then
-            cat > /tmp/ospf.cfg <<EOF
-conf t
-router ospf
-passive-interface default
-network 192.168.30.0/30 area 0
-network 192.168.0.0/28 area 0
-int ens19
-no ip ospf passive
-ip ospf network point-to-point
-end
-write memory
-EOF
-        fi
         run "systemctl enable --now frr"
+
+        if [ "$role" = "hq-rtr" ]; then
+            vtysh -c 'conf t' \
+                   -c 'router ospf' \
+                   -c 'passive-interface default' \
+                   -c 'network 10.10.10.0/30 area 0' \
+                   -c 'network 192.168.100.0/27 area 0' \
+                   -c 'network 192.168.200.0/28 area 0' \
+                   -c 'int gre1' \
+                   -c 'no ip ospf passive' \
+                   -c 'ip ospf authentication message-digest' \
+                   -c 'ip ospf message-digest-key 1 md5 P@ssw0rd' \
+                   -c 'ip ospf network point-to-point' \
+                   -c 'ip ospf mtu-ignore' \
+                   -c 'end' \
+                   -c 'write memory'
+        elif [ "$role" = "br-rtr" ]; then
+            vtysh -c 'conf t' \
+                   -c 'router ospf' \
+                   -c 'passive-interface default' \
+                   -c 'network 10.10.10.0/30 area 0' \
+                   -c 'network 192.168.30.0/30 area 0' \
+                   -c 'int gre1' \
+                   -c 'no ip ospf passive' \
+                   -c 'ip ospf authentication message-digest' \
+                   -c 'ip ospf message-digest-key 1 md5 P@ssw0rd' \
+                   -c 'ip ospf network point-to-point' \
+                   -c 'ip ospf mtu-ignore' \
+                   -c 'int ens20' \
+                   -c 'no ip ospf passive' \
+                   -c 'ip ospf network point-to-point' \
+                   -c 'end' \
+                   -c 'write memory'
+        elif [ "$role" = "br-fw" ]; then
+            vtysh -c 'conf t' \
+                   -c 'router ospf' \
+                   -c 'passive-interface default' \
+                   -c 'network 192.168.30.0/30 area 0' \
+                   -c 'network 192.168.0.0/28 area 0' \
+                   -c 'int ens19' \
+                   -c 'no ip ospf passive' \
+                   -c 'ip ospf network point-to-point' \
+                   -c 'end' \
+                   -c 'write memory'
+        fi
+        hist "vtysh -c 'show running-config'"
         run "systemctl restart frr"
-        sleep 3
-        run "vtysh -f /tmp/ospf.cfg"
-        hist "cat /tmp/ospf.cfg"
     }
 
     setup_ovs_bridge() {
@@ -333,6 +329,10 @@ subnet 192.168.200.0 netmask 255.255.255.240 {
 EOF
         echo 'DHCPDARGS=vlan200' > /etc/sysconfig/dhcpd
         
+        for i in {1..15}; do
+            ip link show vlan200 &>/dev/null && break
+            sleep 1
+        done
         ip link set vlan200 up 2>/dev/null || true
         ip addr add 192.168.200.1/28 dev vlan200 2>/dev/null || true
         
@@ -481,7 +481,8 @@ EOF
 
     setup_hq_srv() {
         run "hostnamectl set-hostname hq-srv.au-team.irpo"
-        setup_iface_static ens19 "$HQ_SRV_ADDR" "192.168.100.1"
+        setup_iface_trunk ens19
+        setup_iface_vlan_ip vlan100 "192.168.100.2/27" "192.168.100.1"
         restart_network
         setup_sudo_user sshuser 2027 wheel
         setup_ssh "$SSH_PORT" sshuser
@@ -500,7 +501,8 @@ EOF
 
     setup_hq_cli() {
         run "hostnamectl set-hostname hq-cli.au-team.irpo"
-        setup_iface_dhcp ens19
+        setup_iface_trunk ens19
+        setup_iface_dhcp vlan200
         restart_network
         setup_timezone
     }

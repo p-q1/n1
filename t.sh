@@ -230,7 +230,7 @@ EOF
         if sshd -t 2>/tmp/sshd_err; then
             run "systemctl restart sshd"
         else
-            echo "✗ ОШИБКА в sshd_config:"
+            echo "Ошибка в sshd_config:"
             cat /tmp/sshd_err
         fi
         hist "nano /etc/openssh/sshd_config"
@@ -238,32 +238,87 @@ EOF
 
     setup_ospf() {
         local role="$1"
-        [ -f /etc/frr/daemons ] || { echo "✗ /etc/frr/daemons не найден"; return 1; }
+        sed -i 's/^zebra=no/zebra=yes/' /etc/frr/daemons
         sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons
+
+        if [ "$role" = "hq-rtr" ]; then
+            cat > /etc/frr/frr.conf <<EOF
+frr version 8.0
+frr defaults traditional
+hostname hq-rtr
+no ipv6 forwarding
+!
+interface gre1
+ ip ospf authentication message-digest
+ ip ospf message-digest-key 1 md5 $OSPF_PASS
+ ip ospf network point-to-point
+ ip ospf mtu-ignore
+ no ip ospf passive
+!
+router ospf
+ ospf router-id 10.10.10.1
+ passive-interface default
+ network 10.10.10.0/30 area 0
+ network 192.168.100.0/27 area 0
+ network 192.168.200.0/28 area 0
+!
+line vty
+!
+EOF
+        elif [ "$role" = "br-rtr" ]; then
+            cat > /etc/frr/frr.conf <<EOF
+frr version 8.0
+frr defaults traditional
+hostname br-rtr
+no ipv6 forwarding
+!
+interface gre1
+ ip ospf authentication message-digest
+ ip ospf message-digest-key 1 md5 $OSPF_PASS
+ ip ospf network point-to-point
+ ip ospf mtu-ignore
+ no ip ospf passive
+!
+interface ens20
+ ip ospf network point-to-point
+ no ip ospf passive
+!
+router ospf
+ ospf router-id 10.10.10.2
+ passive-interface default
+ network 10.10.10.0/30 area 0
+ network 192.168.30.0/30 area 0
+!
+line vty
+!
+EOF
+        elif [ "$role" = "br-fw" ]; then
+            cat > /etc/frr/frr.conf <<EOF
+frr version 8.0
+frr defaults traditional
+hostname br-fw
+no ipv6 forwarding
+!
+interface ens19
+ ip ospf network point-to-point
+ no ip ospf passive
+!
+router ospf
+ ospf router-id 192.168.30.2
+ passive-interface default
+ network 192.168.30.0/30 area 0
+ network 192.168.0.0/28 area 0
+!
+line vty
+!
+EOF
+        fi
+        chown frr:frr /etc/frr/frr.conf
+        chmod 640 /etc/frr/frr.conf
         run "systemctl enable --now frr"
         run "systemctl restart frr"
-
-        local i=0
-        while ! vtysh -c 'show version' &>/dev/null && [ $i -lt 15 ]; do
-            sleep 1; i=$((i+1))
-        done
-        if ! vtysh -c 'show version' &>/dev/null; then
-            echo "✗ vtysh не отвечает — OSPF не настроен"
-            return 1
-        fi
-
-        case "$role" in
-            hq-rtr)
-                run "vtysh -c 'conf t' -c 'router ospf' -c 'passive-interface default' -c 'network 10.10.10.0/30 area 0' -c 'network 192.168.100.0/27 area 0' -c 'network 192.168.200.0/28 area 0' -c 'int gre1' -c 'no ip ospf passive' -c 'ip ospf authentication message-digest' -c 'ip ospf message-digest-key 1 md5 $OSPF_PASS' -c 'ip ospf network point-to-point' -c 'ip ospf mtu-ignore' -c 'end'"
-                ;;
-            br-rtr)
-                run "vtysh -c 'conf t' -c 'router ospf' -c 'passive-interface default' -c 'network 10.10.10.0/30 area 0' -c 'network 192.168.30.0/30 area 0' -c 'int gre1' -c 'no ip ospf passive' -c 'ip ospf authentication message-digest' -c 'ip ospf message-digest-key 1 md5 $OSPF_PASS' -c 'ip ospf network point-to-point' -c 'ip ospf mtu-ignore' -c 'int ens20' -c 'no ip ospf passive' -c 'ip ospf network point-to-point' -c 'end'"
-                ;;
-            br-fw)
-                run "vtysh -c 'conf t' -c 'router ospf' -c 'passive-interface default' -c 'network 192.168.30.0/30 area 0' -c 'network 192.168.0.0/28 area 0' -c 'int ens19' -c 'no ip ospf passive' -c 'ip ospf network point-to-point' -c 'end'"
-                ;;
-        esac
-        run "vtysh -c 'write memory'"
+        sleep 3
+        hist "nano /etc/frr/frr.conf"
     }
 
     setup_ovs_bridge() {
@@ -284,6 +339,7 @@ EOF
     }
 
     setup_dhcp() {
+        mkdir -p /etc/dhcp
         mkdir -p /var/lib/dhcpd
         touch /var/lib/dhcpd/dhcpd.leases
         chown -R dhcpd:dhcpd /var/lib/dhcpd 2>/dev/null || chown -R root:root /var/lib/dhcpd
@@ -308,7 +364,7 @@ EOF
         ip link set vlan200 up 2>/dev/null || true
 
         if ! dhcpd -t -cf /etc/dhcp/dhcpd.conf 2>&1 | tee /tmp/dhcp_test >/dev/null; then
-            echo "✗ Ошибка в dhcpd.conf:"
+            echo "Ошибка в dhcpd.conf:"
             cat /tmp/dhcp_test
             return 1
         fi
@@ -322,46 +378,13 @@ EOF
         local BDIR="/var/lib/bind/etc"
         mkdir -p "$BDIR/zone"
 
-        if [ ! -f "$BDIR/rfc1912.conf" ]; then
-            echo 'zone "localhost" IN { type master; file "'"$BDIR"'/zone/localhost.zone"; };' > "$BDIR/rfc1912.conf"
-            echo 'zone "127.in-addr.arpa" IN { type master; file "'"$BDIR"'/zone/127.zone"; };' >> "$BDIR/rfc1912.conf"
-            echo 'zone "0.in-addr.arpa" IN { type master; file "'"$BDIR"'/zone/0.zone"; };' >> "$BDIR/rfc1912.conf"
-            echo 'zone "255.in-addr.arpa" IN { type master; file "'"$BDIR"'/zone/255.zone"; };' >> "$BDIR/rfc1912.conf"
+        if [ -f /etc/bind/options.conf ]; then
+            if ! grep -q 'forwarders' /etc/bind/options.conf; then
+                sed -i '/options {/a \    forwarders { 8.8.8.8; };\n    allow-query { any; };' /etc/bind/options.conf
+            fi
         fi
 
-        cat > "$BDIR/zone/localhost.zone" <<EOF
-\$TTL 1D
-@   IN  SOA localhost. root.localhost. ( 2024010101 12H 1H 1W 1D )
-    IN  NS  localhost.
-    IN  A   127.0.0.1
-EOF
-        cat > "$BDIR/zone/127.zone" <<EOF
-\$TTL 1D
-@   IN  SOA localhost. root.localhost. ( 2024010101 12H 1H 1W 1D )
-    IN  NS  localhost.
-1   IN  PTR localhost.
-EOF
-        cat > "$BDIR/zone/0.zone" <<EOF
-\$TTL 1D
-@   IN  SOA localhost. root.localhost. ( 2024010101 12H 1H 1W 1D )
-    IN  NS  localhost.
-EOF
-        cat > "$BDIR/zone/255.zone" <<EOF
-\$TTL 1D
-@   IN  SOA localhost. root.localhost. ( 2024010101 12H 1H 1W 1D )
-    IN  NS  localhost.
-EOF
-
-        cat > "$BDIR/options.conf" <<EOF
-options {
-    directory "$BDIR";
-    recursion yes;
-    allow-query { any; };
-    forwarders { 8.8.8.8; };
-    listen-on { any; };
-};
-include "$BDIR/rfc1912.conf";
-
+        cat > "$BDIR/zones.conf" <<EOF
 zone "au-team.irpo" { type master; file "$BDIR/zone/au-team.irpo"; };
 zone "100.168.192.in-addr.arpa" { type master; file "$BDIR/zone/100.168.192.rev"; };
 zone "0.168.192.in-addr.arpa" { type master; file "$BDIR/zone/0.168.192.rev"; };
@@ -382,6 +405,7 @@ br-srv  IN  A   192.168.0.2
 docker  IN  A   172.16.30.1
 web     IN  A   172.16.40.1
 EOF
+
         cat > "$BDIR/zone/100.168.192.rev" <<EOF
 \$TTL 1D
 @   IN  SOA ns.au-team.irpo. admin.au-team.irpo. (
@@ -390,6 +414,7 @@ EOF
 1   IN  PTR hq-rtr.au-team.irpo.
 2   IN  PTR hq-srv.au-team.irpo.
 EOF
+
         cat > "$BDIR/zone/0.168.192.rev" <<EOF
 \$TTL 1D
 @   IN  SOA ns.au-team.irpo. admin.au-team.irpo. (
@@ -401,18 +426,23 @@ EOF
 
         chown root:named "$BDIR/zone/"* 2>/dev/null || chown root:bind "$BDIR/zone/"* 2>/dev/null || true
         chmod 640 "$BDIR/zone/"*
+        chown root:named "$BDIR/zones.conf" 2>/dev/null || chown root:bind "$BDIR/zones.conf" 2>/dev/null || true
+        chmod 640 "$BDIR/zones.conf"
 
         if [ -f /etc/named.conf ]; then
-            if ! grep -q 'include "/var/lib/bind/etc/options.conf";' /etc/named.conf; then
-                echo 'include "/var/lib/bind/etc/options.conf";' >> /etc/named.conf
+            sed -i '/include "\/var\/lib\/bind\/etc\/options.conf";/d' /etc/named.conf
+            if ! grep -q 'include "/var/lib/bind/etc/zones.conf";' /etc/named.conf; then
+                echo 'include "/var/lib/bind/etc/zones.conf";' >> /etc/named.conf
             fi
         fi
-        
-        named-checkconf /etc/named.conf || { echo "✗ named-checkconf failed"; return 1; }
-        named-checkconf -z /etc/named.conf || { echo "✗ named-checkconf -z failed"; return 1; }
+
+        named-checkconf /etc/named.conf || { echo "Ошибка named-checkconf"; return 1; }
+        named-checkconf -z /etc/named.conf || { echo "Ошибка named-checkconf -z"; return 1; }
         run "systemctl enable --now bind"
         echo "nameserver 192.168.100.2" > /etc/resolv.conf
-        hist "nano /var/lib/bind/etc/options.conf"
+        hist "nano /etc/named.conf"
+        hist "nano /etc/bind/options.conf"
+        hist "nano /var/lib/bind/etc/zones.conf"
     }
 
     setup_timezone() {
@@ -436,7 +466,7 @@ EOF
         setup_iface_trunk ens21
         setup_ovs_bridge
         mkdir -p /etc/net/ifaces/hq-sw
-        _opts_static /etc/net/ifaces/hq-sw
+        _opts_noip /etc/net/ifaces/hq-sw
         setup_iface_vlan_ip vlan100 "$HQ_RTR_VLAN100"
         setup_iface_vlan_ip vlan200 "$HQ_RTR_VLAN200"
         setup_iface_vlan_ip vlan999 "$HQ_RTR_VLAN999"

@@ -362,6 +362,7 @@ EOF
             sleep 1
         done
         ip link set vlan200 up 2>/dev/null || true
+        ip addr add 192.168.200.1/28 dev vlan200 2>/dev/null || true
 
         if ! dhcpd -t -cf /etc/dhcp/dhcpd.conf 2>&1 | tee /tmp/dhcp_test >/dev/null; then
             echo "Ошибка в dhcpd.conf:"
@@ -371,12 +372,19 @@ EOF
 
         run "systemctl enable --now dhcpd"
         hist "nano /etc/dhcp/dhcpd.conf"
+        hist "nano /etc/sysconfig/dhcpd"
     }
 
     setup_dns() {
         echo "nameserver 8.8.8.8" > /etc/resolv.conf
         local BDIR="/var/lib/bind/etc"
         mkdir -p "$BDIR/zone"
+
+        if [ ! -s /etc/rndc.key ]; then
+            rndc-confgen -a -A hmac-sha256 >/dev/null 2>&1
+            chmod 640 /etc/rndc.key
+            chown root:named /etc/rndc.key 2>/dev/null || chown root:bind /etc/rndc.key 2>/dev/null || true
+        fi
 
         if [ -f /etc/bind/options.conf ]; then
             if ! grep -q 'forwarders' /etc/bind/options.conf; then
@@ -433,6 +441,9 @@ EOF
             sed -i '/include "\/var\/lib\/bind\/etc\/options.conf";/d' /etc/named.conf
             if ! grep -q 'include "/var/lib/bind/etc/zones.conf";' /etc/named.conf; then
                 echo 'include "/var/lib/bind/etc/zones.conf";' >> /etc/named.conf
+            fi
+            if ! grep -q 'include "/etc/rndc.key";' /etc/named.conf; then
+                echo 'include "/etc/rndc.key";' >> /etc/named.conf
             fi
         fi
 

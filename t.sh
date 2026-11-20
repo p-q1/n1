@@ -14,10 +14,10 @@ main() {
     local HQ_RTR_VLAN100="192.168.100.1/27"
     local HQ_RTR_VLAN200="192.168.200.1/28"
     local HQ_RTR_VLAN999="192.168.99.1/29"
-    local HQ_RTR_GRE="10.10.10.1/30"
+    local HQ_RTR_GRE="10.10.10.1 peer 10.10.10.2"
     local BR_RTR_ENS19="172.16.40.2/28"
     local BR_RTR_ENS20="192.168.30.1/30"
-    local BR_RTR_GRE="10.10.10.2/30"
+    local BR_RTR_GRE="10.10.10.2 peer 10.10.10.1"
     local BR_FW_ENS19="192.168.30.2/30"
     local BR_FW_ENS20="192.168.0.1/28"
     local HQ_SRV_ADDR="192.168.100.2/27"
@@ -52,13 +52,13 @@ main() {
             HQ_RTR_VLAN100=$(ask "HQ-RTR vlan100" "$HQ_RTR_VLAN100")
             HQ_RTR_VLAN200=$(ask "HQ-RTR vlan200" "$HQ_RTR_VLAN200")
             HQ_RTR_VLAN999=$(ask "HQ-RTR vlan999" "$HQ_RTR_VLAN999")
-            HQ_RTR_GRE=$(ask "HQ-RTR gre1" "$HQ_RTR_GRE")
+            HQ_RTR_GRE=$(ask "HQ-RTR gre1 ipv4address" "$HQ_RTR_GRE")
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         BR-RTR)
             BR_RTR_ENS19=$(ask "BR-RTR ens19 (->ISP)" "$BR_RTR_ENS19")
             BR_RTR_ENS20=$(ask "BR-RTR ens20 (->BR-FW)" "$BR_RTR_ENS20")
-            BR_RTR_GRE=$(ask "BR-RTR gre1" "$BR_RTR_GRE")
+            BR_RTR_GRE=$(ask "BR-RTR gre1 ipv4address" "$BR_RTR_GRE")
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         BR-FW)
@@ -173,7 +173,7 @@ TUNMTU=1476
 TUNOPTIONS='ttl 64'
 DISABLE=no
 EOF
-        echo "$addr peer $remote_ip" > "$d/ipv4address"
+        echo "$addr" > "$d/ipv4address"
         hist "nano /etc/net/ifaces/$iface/options"
         hist "nano /etc/net/ifaces/$iface/ipv4address"
     }
@@ -203,9 +203,10 @@ EOF
     setup_nat() {
         local out_iface="$1"
         enable_ip_forward
-        iptables -I INPUT -p ospf -j ACCEPT 2>/dev/null || true
-        iptables -I OUTPUT -p ospf -j ACCEPT 2>/dev/null || true
-        iptables -I INPUT -i gre1 -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -p 47 -j ACCEPT 2>/dev/null || true
+        iptables -I FORWARD -p 47 -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -p 89 -j ACCEPT 2>/dev/null || true
+        iptables -I FORWARD -p 89 -j ACCEPT 2>/dev/null || true
         run "iptables -t nat -A POSTROUTING -o $out_iface -j MASQUERADE"
         run "iptables -P FORWARD ACCEPT"
         run "iptables-save > /etc/sysconfig/iptables"
@@ -397,8 +398,8 @@ EOF
         fi
 
         if [ -f /etc/bind/options.conf ]; then
-            if ! grep -q 'listen-on port 53' /etc/bind/options.conf; then
-                sed -i '/options {/a \    listen-on port 53 { any; };\n    listen-on-v6 { any; };\n    allow-query { any; };\n    recursion yes;\n    forwarders { 8.8.8.8; };' /etc/bind/options.conf
+            if ! grep -q 'dnssec-validation' /etc/bind/options.conf; then
+                sed -i '/options {/a \    dnssec-validation no;\n    listen-on port 53 { any; };\n    listen-on-v6 port 53 { any; };\n    allow-query { any; };\n    recursion yes;\n    forwarders { 8.8.8.8; };' /etc/bind/options.conf
             fi
         fi
 

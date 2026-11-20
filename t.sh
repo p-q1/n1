@@ -134,23 +134,29 @@ EOF
         _opts_noip "$d"
     }
 
-    setup_iface_vlan_ip() {
-        local iface="$1" addr="$2" gw="${3:-}"
+    setup_iface_vlan() {
+        local iface="$1" parent="$2" vid="$3" addr="${4:-}" gw="${5:-}" proto="${6:-static}"
         local d="/etc/net/ifaces/$iface"
         mkdir -p "$d"
-        _opts_static "$d"
-        echo "$addr" > "$d/ipv4address"
-        if [ -n "$gw" ]; then
-            echo "default via $gw" > "$d/ipv4route"
+        cat > "$d/options" <<EOF
+TYPE=vlan
+HOST=$parent
+VID=$vid
+BOOTPROTO=$proto
+CONFIG_IPV4=yes
+ONBOOT=yes
+DISABLED=no
+NM_CONTROLLED=no
+SYSTEMD_CONTROLLED=no
+EOF
+        if [ "$proto" = "static" ] && [ -n "$addr" ]; then
+            echo "$addr" > "$d/ipv4address"
+            if [ -n "$gw" ]; then
+                echo "default via $gw" > "$d/ipv4route"
+            fi
         fi
+        hist "nano /etc/net/ifaces/$iface/options"
         hist "nano /etc/net/ifaces/$iface/ipv4address"
-    }
-
-    setup_iface_dhcp() {
-        local iface="$1"
-        local d="/etc/net/ifaces/$iface"
-        mkdir -p "$d"
-        _opts_dhcp "$d"
     }
 
     setup_iface_gre() {
@@ -246,72 +252,88 @@ EOF
         sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons
 
         if [ "$role" = "hq-rtr" ]; then
-            cat > /tmp/ospf.cfg <<EOF
-conf t
+            cat > /etc/frr/frr.conf <<EOF
+frr version 8.0
+frr defaults traditional
+hostname hq-rtr
+no ipv6 forwarding
+service integrated-vtysh-config
+!
+interface gre1
+ ip ospf authentication message-digest
+ ip ospf message-digest-key 1 md5 P@ssw0rd
+ ip ospf network point-to-point
+ ip ospf mtu-ignore
+ no ip ospf passive
+!
 router ospf
-router-id 10.10.10.1
-passive-interface default
-network 10.10.10.0/30 area 0
-network 192.168.100.0/27 area 0
-network 192.168.200.0/28 area 0
-area 0 authentication message-digest
-exit
-int gre1
-no ip ospf passive
-ip ospf authentication message-digest
-ip ospf message-digest-key 1 md5 $OSPF_PASS
-ip ospf network point-to-point
-ip ospf mtu-ignore
-exit
-end
-write memory
+ ospf router-id 10.10.10.1
+ passive-interface default
+ network 10.10.10.0/30 area 0
+ network 192.168.100.0/27 area 0
+ network 192.168.200.0/28 area 0
+ area 0 authentication message-digest
+!
+line vty
+!
 EOF
         elif [ "$role" = "br-rtr" ]; then
-            cat > /tmp/ospf.cfg <<EOF
-conf t
+            cat > /etc/frr/frr.conf <<EOF
+frr version 8.0
+frr defaults traditional
+hostname br-rtr
+no ipv6 forwarding
+service integrated-vtysh-config
+!
+interface gre1
+ ip ospf authentication message-digest
+ ip ospf message-digest-key 1 md5 P@ssw0rd
+ ip ospf network point-to-point
+ ip ospf mtu-ignore
+ no ip ospf passive
+!
+interface ens20
+ ip ospf network point-to-point
+ no ip ospf passive
+!
 router ospf
-router-id 10.10.10.2
-passive-interface default
-network 10.10.10.0/30 area 0
-network 192.168.30.0/30 area 0
-area 0 authentication message-digest
-exit
-int gre1
-no ip ospf passive
-ip ospf authentication message-digest
-ip ospf message-digest-key 1 md5 $OSPF_PASS
-ip ospf network point-to-point
-ip ospf mtu-ignore
-exit
-int ens20
-no ip ospf passive
-ip ospf network point-to-point
-exit
-end
-write memory
+ ospf router-id 10.10.10.2
+ passive-interface default
+ network 10.10.10.0/30 area 0
+ network 192.168.30.0/30 area 0
+ area 0 authentication message-digest
+!
+line vty
+!
 EOF
         elif [ "$role" = "br-fw" ]; then
-            cat > /tmp/ospf.cfg <<EOF
-conf t
+            cat > /etc/frr/frr.conf <<EOF
+frr version 8.0
+frr defaults traditional
+hostname br-fw
+no ipv6 forwarding
+service integrated-vtysh-config
+!
+interface ens19
+ ip ospf network point-to-point
+ no ip ospf passive
+!
 router ospf
-router-id 192.168.30.2
-passive-interface default
-network 192.168.30.0/30 area 0
-network 192.168.0.0/28 area 0
-exit
-int ens19
-no ip ospf passive
-ip ospf network point-to-point
-exit
-end
-write memory
+ ospf router-id 192.168.30.2
+ passive-interface default
+ network 192.168.30.0/30 area 0
+ network 192.168.0.0/28 area 0
+!
+line vty
+!
 EOF
         fi
+        chown frr:frr /etc/frr/frr.conf
+        chmod 640 /etc/frr/frr.conf
         run "systemctl enable --now frr"
         run "systemctl restart frr"
         sleep 3
-        run "vtysh -f /tmp/ospf.cfg"
-        hist "cat /tmp/ospf.cfg"
+        hist "nano /etc/frr/frr.conf"
     }
 
     setup_ovs_bridge() {
@@ -433,9 +455,11 @@ EOF
             fi
         fi
 
+        echo "nameserver 192.168.100.2" > /etc/net/ifaces/vlan100/resolv.conf
+        echo "nameserver 8.8.8.8" >> /etc/net/ifaces/vlan100/resolv.conf
+
         run "named-checkconf /etc/named.conf"
         run "systemctl enable --now bind"
-        echo "nameserver 192.168.100.2" > /etc/resolv.conf
         hist "nano /etc/named.conf"
         hist "nano /etc/bind/options.conf"
         hist "nano /var/lib/bind/etc/zones.conf"
@@ -458,14 +482,15 @@ EOF
     setup_hq_rtr() {
         run "hostnamectl set-hostname hq-rtr.au-team.irpo"
         setup_iface_static ens19 "$HQ_RTR_ENS19" "172.16.30.1"
+        echo "nameserver 8.8.8.8" > /etc/net/ifaces/ens19/resolv.conf
         setup_iface_trunk ens20
         setup_iface_trunk ens21
         setup_ovs_bridge
         mkdir -p /etc/net/ifaces/hq-sw
         _opts_noip /etc/net/ifaces/hq-sw
-        setup_iface_vlan_ip vlan100 "$HQ_RTR_VLAN100"
-        setup_iface_vlan_ip vlan200 "$HQ_RTR_VLAN200"
-        setup_iface_vlan_ip vlan999 "$HQ_RTR_VLAN999"
+        setup_iface_vlan vlan100 ens20 100 "$HQ_RTR_VLAN100"
+        setup_iface_vlan vlan200 ens21 200 "$HQ_RTR_VLAN200"
+        setup_iface_vlan vlan999 ens20 999 "$HQ_RTR_VLAN999"
         setup_iface_gre gre1 "172.16.30.2" "172.16.40.2" "$HQ_RTR_GRE"
         restart_network
         setup_nat ens19
@@ -502,7 +527,7 @@ EOF
     setup_hq_srv() {
         run "hostnamectl set-hostname hq-srv.au-team.irpo"
         setup_iface_trunk ens19
-        setup_iface_vlan_ip vlan100 "192.168.100.2/27" "192.168.100.1"
+        setup_iface_vlan vlan100 ens19 100 "$HQ_SRV_ADDR" "192.168.100.1" "static"
         restart_network
         setup_sudo_user sshuser 2027 wheel
         setup_ssh "$SSH_PORT" sshuser
@@ -522,7 +547,7 @@ EOF
     setup_hq_cli() {
         run "hostnamectl set-hostname hq-cli.au-team.irpo"
         setup_iface_trunk ens19
-        setup_iface_dhcp vlan200
+        setup_iface_vlan vlan200 ens19 200 "" "" "dhcp"
         restart_network
         setup_timezone
     }

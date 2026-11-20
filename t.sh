@@ -203,7 +203,9 @@ EOF
     setup_nat() {
         local out_iface="$1"
         enable_ip_forward
-        iptables -I INPUT -p 89 -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -p ospf -j ACCEPT 2>/dev/null || true
+        iptables -I OUTPUT -p ospf -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -i gre1 -j ACCEPT 2>/dev/null || true
         run "iptables -t nat -A POSTROUTING -o $out_iface -j MASQUERADE"
         run "iptables -P FORWARD ACCEPT"
         run "iptables-save > /etc/sysconfig/iptables"
@@ -272,7 +274,6 @@ router ospf
  network 10.10.10.0/30 area 0
  network 192.168.100.0/27 area 0
  network 192.168.200.0/28 area 0
- area 0 authentication message-digest
 !
 line vty
 !
@@ -301,7 +302,6 @@ router ospf
  passive-interface default
  network 10.10.10.0/30 area 0
  network 192.168.30.0/30 area 0
- area 0 authentication message-digest
 !
 line vty
 !
@@ -345,8 +345,8 @@ EOF
         ovs-vsctl --may-exist add-port hq-sw vlan100 -- set Interface vlan100 type=internal
         ovs-vsctl --may-exist add-port hq-sw vlan200 -- set Interface vlan200 type=internal
         ovs-vsctl --may-exist add-port hq-sw vlan999 -- set Interface vlan999 type=internal
-        ovs-vsctl set Port ens20 vlan_mode=access tag=100
-        ovs-vsctl set Port ens21 vlan_mode=access tag=200
+        ovs-vsctl set Port ens20 vlan_mode=trunk trunks=100
+        ovs-vsctl set Port ens21 vlan_mode=trunk trunks=200
         ovs-vsctl set Port vlan100 vlan_mode=access tag=100
         ovs-vsctl set Port vlan200 vlan_mode=access tag=200
         ovs-vsctl set Port vlan999 vlan_mode=access tag=999
@@ -385,7 +385,6 @@ EOF
     }
 
     setup_dns() {
-        echo "nameserver 8.8.8.8" > /etc/resolv.conf
         local BDIR="/var/lib/bind/etc"
         mkdir -p "$BDIR/zone"
 
@@ -398,8 +397,8 @@ EOF
         fi
 
         if [ -f /etc/bind/options.conf ]; then
-            if ! grep -q 'forwarders' /etc/bind/options.conf; then
-                sed -i '/options {/a \    forwarders { 8.8.8.8; };\n    allow-query { any; };' /etc/bind/options.conf
+            if ! grep -q 'listen-on port 53' /etc/bind/options.conf; then
+                sed -i '/options {/a \    listen-on port 53 { any; };\n    listen-on-v6 { any; };\n    allow-query { any; };\n    recursion yes;\n    forwarders { 8.8.8.8; };' /etc/bind/options.conf
             fi
         fi
 
@@ -449,14 +448,13 @@ EOF
         chmod 640 "$BDIR/zones.conf"
 
         if [ -f /etc/named.conf ]; then
-            sed -i '/include "\/var\/lib\/bind\/etc\/options.conf";/d' /etc/named.conf
-            if ! grep -q 'include "/var/lib/bind/etc/zones.conf";' /etc/named.conf; then
-                echo 'include "/var/lib/bind/etc/zones.conf";' >> /etc/named.conf
-            fi
+            sed -i '/include "\/var\/lib\/bind\/etc\/zones.conf";/d' /etc/named.conf
+            echo 'include "/var/lib/bind/etc/zones.conf";' >> /etc/named.conf
         fi
 
-        echo "nameserver 192.168.100.2" > /etc/net/ifaces/vlan100/resolv.conf
+        echo "nameserver 127.0.0.1" > /etc/net/ifaces/vlan100/resolv.conf
         echo "nameserver 8.8.8.8" >> /etc/net/ifaces/vlan100/resolv.conf
+        echo "nameserver 127.0.0.1" > /etc/resolv.conf
 
         run "named-checkconf /etc/named.conf"
         run "systemctl enable --now bind"
@@ -474,6 +472,7 @@ EOF
         run "hostnamectl set-hostname isp.au-team.irpo"
         setup_iface_static ens20 "$ISP_ENS20"
         setup_iface_static ens21 "$ISP_ENS21"
+        echo "nameserver 8.8.8.8" > /etc/net/ifaces/ens19/resolv.conf
         restart_network
         setup_nat ens19
         setup_timezone
@@ -504,6 +503,7 @@ EOF
     setup_br_rtr() {
         run "hostnamectl set-hostname br-rtr.au-team.irpo"
         setup_iface_static ens19 "$BR_RTR_ENS19" "172.16.40.1"
+        echo "nameserver 8.8.8.8" > /etc/net/ifaces/ens19/resolv.conf
         setup_iface_static ens20 "$BR_RTR_ENS20"
         setup_iface_gre gre1 "172.16.40.2" "172.16.30.2" "$BR_RTR_GRE"
         restart_network
@@ -517,6 +517,7 @@ EOF
     setup_br_fw() {
         run "hostnamectl set-hostname br-fw.au-team.irpo"
         setup_iface_static ens19 "$BR_FW_ENS19" "192.168.30.1"
+        echo "nameserver 8.8.8.8" > /etc/net/ifaces/ens19/resolv.conf
         setup_iface_static ens20 "$BR_FW_ENS20"
         restart_network
         setup_nat ens19
@@ -538,6 +539,7 @@ EOF
     setup_br_srv() {
         run "hostnamectl set-hostname br-srv.au-team.irpo"
         setup_iface_static ens19 "$BR_SRV_ADDR" "192.168.0.1"
+        echo "nameserver 192.168.100.2" > /etc/net/ifaces/ens19/resolv.conf
         restart_network
         setup_sudo_user sshuser 2027 wheel
         setup_ssh "$SSH_PORT" sshuser

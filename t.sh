@@ -386,27 +386,28 @@ EOF
     }
 
     setup_dns() {
-        local BDIR="/var/lib/bind/etc"
+        local CHROOT_DIR="/var/lib/bind"
+        local BDIR="$CHROOT_DIR/etc"
         mkdir -p "$BDIR/zone"
 
-        rm -f /etc/bind/rndc.key
-        rndc-confgen -a -c /etc/bind/rndc.key >/dev/null 2>&1
-        if [ -f /etc/bind/rndc.key ]; then
-            sed -i 's/^#//g' /etc/bind/rndc.key
-            chown root:named /etc/bind/rndc.key 2>/dev/null || true
-            chmod 640 /etc/bind/rndc.key
+        rm -f "$BDIR/rndc.key"
+        rndc-confgen -a -c "$BDIR/rndc.key" >/dev/null 2>&1
+        if [ -f "$BDIR/rndc.key" ]; then
+            sed -i 's/^#//g' "$BDIR/rndc.key"
+            chown root:named "$BDIR/rndc.key" 2>/dev/null || true
+            chmod 640 "$BDIR/rndc.key"
         fi
 
-        if [ -f /etc/bind/options.conf ]; then
-            if ! grep -q 'dnssec-validation' /etc/bind/options.conf; then
-                sed -i '/options {/a \    dnssec-validation no;\n    listen-on port 53 { any; };\n    listen-on-v6 port 53 { any; };\n    allow-query { any; };\n    recursion yes;\n    forwarders { 8.8.8.8; };' /etc/bind/options.conf
+        if [ -f "$BDIR/options.conf" ]; then
+            if ! grep -q 'dnssec-validation' "$BDIR/options.conf"; then
+                sed -i '/options {/a \    dnssec-validation no;\n    listen-on port 53 { any; };\n    listen-on-v6 port 53 { any; };\n    allow-query { any; };\n    recursion yes;\n    forwarders { 8.8.8.8; };' "$BDIR/options.conf"
             fi
         fi
 
         cat > "$BDIR/zones.conf" <<EOF
-zone "au-team.irpo" { type master; file "$BDIR/zone/au-team.irpo"; };
-zone "100.168.192.in-addr.arpa" { type master; file "$BDIR/zone/100.168.192.rev"; };
-zone "0.168.192.in-addr.arpa" { type master; file "$BDIR/zone/0.168.192.rev"; };
+zone "au-team.irpo" { type master; file "/etc/zone/au-team.irpo"; };
+zone "100.168.192.in-addr.arpa" { type master; file "/etc/zone/100.168.192.rev"; };
+zone "0.168.192.in-addr.arpa" { type master; file "/etc/zone/0.168.192.rev"; };
 EOF
 
         cat > "$BDIR/zone/au-team.irpo" <<EOF
@@ -443,14 +444,15 @@ EOF
 2   IN  PTR br-srv.au-team.irpo.
 EOF
 
-        chown root:named "$BDIR/zone/"* 2>/dev/null || chown root:bind "$BDIR/zone/"* 2>/dev/null || true
+        chown root:named "$BDIR/zone/"* 2>/dev/null || true
         chmod 640 "$BDIR/zone/"*
-        chown root:named "$BDIR/zones.conf" 2>/dev/null || chown root:bind "$BDIR/zones.conf" 2>/dev/null || true
+        chown root:named "$BDIR/zones.conf" 2>/dev/null || true
         chmod 640 "$BDIR/zones.conf"
 
         if [ -f /etc/named.conf ]; then
             sed -i '/include "\/var\/lib\/bind\/etc\/zones.conf";/d' /etc/named.conf
-            echo 'include "/var/lib/bind/etc/zones.conf";' >> /etc/named.conf
+            sed -i '/include "\/etc\/zones.conf";/d' /etc/named.conf
+            echo 'include "/etc/zones.conf";' >> /etc/named.conf
         fi
 
         echo "nameserver 127.0.0.1" > /etc/net/ifaces/vlan100/resolv.conf
@@ -460,7 +462,7 @@ EOF
         run "named-checkconf /etc/named.conf"
         run "systemctl enable --now bind"
         hist "nano /etc/named.conf"
-        hist "nano /etc/bind/options.conf"
+        hist "nano /var/lib/bind/etc/options.conf"
         hist "nano /var/lib/bind/etc/zones.conf"
     }
 

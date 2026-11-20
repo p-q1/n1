@@ -386,16 +386,17 @@ EOF
     }
 
     setup_dns() {
-        local CHROOT_DIR="/var/lib/bind"
-        local BDIR="$CHROOT_DIR/etc"
+        control bind-chroot disabled 2>/dev/null || true
+
+        local BDIR="/etc/bind"
         mkdir -p "$BDIR/zone"
 
-        rm -f "$BDIR/rndc.key"
-        rndc-confgen -a -c "$BDIR/rndc.key" >/dev/null 2>&1
-        if [ -f "$BDIR/rndc.key" ]; then
-            sed -i 's/^#//g' "$BDIR/rndc.key"
-            chown root:named "$BDIR/rndc.key" 2>/dev/null || true
-            chmod 640 "$BDIR/rndc.key"
+        rm -f /etc/rndc.key
+        rndc-confgen -a -c /etc/rndc.key >/dev/null 2>&1
+        if [ -f /etc/rndc.key ]; then
+            sed -i 's/^#//g' /etc/rndc.key
+            chown root:named /etc/rndc.key 2>/dev/null || true
+            chmod 640 /etc/rndc.key
         fi
 
         if [ -f "$BDIR/options.conf" ]; then
@@ -405,9 +406,9 @@ EOF
         fi
 
         cat > "$BDIR/zones.conf" <<EOF
-zone "au-team.irpo" { type master; file "/etc/zone/au-team.irpo"; };
-zone "100.168.192.in-addr.arpa" { type master; file "/etc/zone/100.168.192.rev"; };
-zone "0.168.192.in-addr.arpa" { type master; file "/etc/zone/0.168.192.rev"; };
+zone "au-team.irpo" { type master; file "$BDIR/zone/au-team.irpo"; };
+zone "100.168.192.in-addr.arpa" { type master; file "$BDIR/zone/100.168.192.rev"; };
+zone "0.168.192.in-addr.arpa" { type master; file "$BDIR/zone/0.168.192.rev"; };
 EOF
 
         cat > "$BDIR/zone/au-team.irpo" <<EOF
@@ -450,9 +451,8 @@ EOF
         chmod 640 "$BDIR/zones.conf"
 
         if [ -f /etc/named.conf ]; then
-            sed -i '/include "\/var\/lib\/bind\/etc\/zones.conf";/d' /etc/named.conf
-            sed -i '/include "\/etc\/zones.conf";/d' /etc/named.conf
-            echo 'include "/etc/zones.conf";' >> /etc/named.conf
+            sed -i '/include ".*zones.conf";/d' /etc/named.conf
+            echo "include \"$BDIR/zones.conf\";" >> /etc/named.conf
         fi
 
         echo "nameserver 127.0.0.1" > /etc/net/ifaces/vlan100/resolv.conf
@@ -462,8 +462,8 @@ EOF
         run "named-checkconf /etc/named.conf"
         run "systemctl enable --now bind"
         hist "nano /etc/named.conf"
-        hist "nano /var/lib/bind/etc/options.conf"
-        hist "nano /var/lib/bind/etc/zones.conf"
+        hist "nano /etc/bind/options.conf"
+        hist "nano /etc/bind/zones.conf"
     }
 
     setup_timezone() {

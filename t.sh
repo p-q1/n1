@@ -11,9 +11,6 @@ main() {
     local ISP_ENS20="172.16.30.1/28"
     local ISP_ENS21="172.16.40.1/28"
     local HQ_RTR_ENS19="172.16.30.2/28"
-    local HQ_RTR_VLAN100="192.168.100.1/27"
-    local HQ_RTR_VLAN200="192.168.200.1/28"
-    local HQ_RTR_VLAN999="192.168.99.1/29"
     local HQ_RTR_GRE="10.10.10.1 peer 10.10.10.2"
     local BR_RTR_ENS19="172.16.40.2/28"
     local BR_RTR_ENS20="192.168.30.1/30"
@@ -26,6 +23,10 @@ main() {
     local SSH_PORT="2027"
     local OSPF_PASS="P@ssw0rd"
     local TZ="Europe/Moscow"
+    
+    local VLAN_HQ_SRV="100"
+    local VLAN_HQ_CLI="200"
+    local VLAN_HQ_MGMT="999"
 
     hist() { 
         history -s "$1" 2>/dev/null || true
@@ -49,9 +50,9 @@ main() {
             ;;
         HQ-RTR)
             HQ_RTR_ENS19=$(ask "HQ-RTR ens19 (->ISP)" "$HQ_RTR_ENS19")
-            HQ_RTR_VLAN100=$(ask "HQ-RTR vlan100" "$HQ_RTR_VLAN100")
-            HQ_RTR_VLAN200=$(ask "HQ-RTR vlan200" "$HQ_RTR_VLAN200")
-            HQ_RTR_VLAN999=$(ask "HQ-RTR vlan999" "$HQ_RTR_VLAN999")
+            VLAN_HQ_SRV=$(ask "VLAN HQ-SRV" "$VLAN_HQ_SRV")
+            VLAN_HQ_CLI=$(ask "VLAN HQ-CLI" "$VLAN_HQ_CLI")
+            VLAN_HQ_MGMT=$(ask "VLAN HQ-MGMT" "$VLAN_HQ_MGMT")
             HQ_RTR_GRE=$(ask "HQ-RTR gre1 ipv4address" "$HQ_RTR_GRE")
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
@@ -207,6 +208,8 @@ EOF
         iptables -I FORWARD -p 47 -j ACCEPT 2>/dev/null || true
         iptables -I INPUT -p 89 -j ACCEPT 2>/dev/null || true
         iptables -I FORWARD -p 89 -j ACCEPT 2>/dev/null || true
+        iptables -I INPUT -p 53 -j ACCEPT 2>/dev/null || true
+        iptables -I FORWARD -p 53 -j ACCEPT 2>/dev/null || true
         run "iptables -t nat -A POSTROUTING -o $out_iface -j MASQUERADE"
         run "iptables -P FORWARD ACCEPT"
         run "iptables-save > /etc/sysconfig/iptables"
@@ -269,6 +272,12 @@ interface gre1
  ip ospf mtu-ignore
  no ip ospf passive
 !
+interface vlan${VLAN_HQ_SRV}
+ ip ospf mtu-ignore
+!
+interface vlan${VLAN_HQ_CLI}
+ ip ospf mtu-ignore
+!
 router ospf
  ospf router-id 172.16.30.2
  passive-interface default
@@ -297,6 +306,7 @@ interface gre1
 !
 interface ens20
  ip ospf network point-to-point
+ ip ospf mtu-ignore
  no ip ospf passive
 !
 router ospf
@@ -319,6 +329,7 @@ service integrated-vtysh-config
 !
 interface ens19
  ip ospf network point-to-point
+ ip ospf mtu-ignore
  no ip ospf passive
 !
 router ospf
@@ -345,14 +356,14 @@ EOF
         ovs-vsctl --may-exist add-br hq-sw
         ovs-vsctl --may-exist add-port hq-sw ens20
         ovs-vsctl --may-exist add-port hq-sw ens21
-        ovs-vsctl --may-exist add-port hq-sw vlan100 -- set Interface vlan100 type=internal
-        ovs-vsctl --may-exist add-port hq-sw vlan200 -- set Interface vlan200 type=internal
-        ovs-vsctl --may-exist add-port hq-sw vlan999 -- set Interface vlan999 type=internal
-        ovs-vsctl set Port ens20 vlan_mode=trunk trunks=100
-        ovs-vsctl set Port ens21 vlan_mode=trunk trunks=200
-        ovs-vsctl set Port vlan100 vlan_mode=access tag=100
-        ovs-vsctl set Port vlan200 vlan_mode=access tag=200
-        ovs-vsctl set Port vlan999 vlan_mode=access tag=999
+        ovs-vsctl --may-exist add-port hq-sw vlan${VLAN_HQ_SRV} -- set Interface vlan${VLAN_HQ_SRV} type=internal
+        ovs-vsctl --may-exist add-port hq-sw vlan${VLAN_HQ_CLI} -- set Interface vlan${VLAN_HQ_CLI} type=internal
+        ovs-vsctl --may-exist add-port hq-sw vlan${VLAN_HQ_MGMT} -- set Interface vlan${VLAN_HQ_MGMT} type=internal
+        ovs-vsctl set Port ens20 vlan_mode=trunk trunks=${VLAN_HQ_SRV}
+        ovs-vsctl set Port ens21 vlan_mode=trunk trunks=${VLAN_HQ_CLI}
+        ovs-vsctl set Port vlan${VLAN_HQ_SRV} vlan_mode=access tag=${VLAN_HQ_SRV}
+        ovs-vsctl set Port vlan${VLAN_HQ_CLI} vlan_mode=access tag=${VLAN_HQ_CLI}
+        ovs-vsctl set Port vlan${VLAN_HQ_MGMT} vlan_mode=access tag=${VLAN_HQ_MGMT}
         hist "ovs-vsctl show"
     }
 
@@ -372,14 +383,14 @@ subnet 192.168.200.0 netmask 255.255.255.240 {
     range dynamic-bootp 192.168.200.2 192.168.200.10;
 }
 EOF
-        echo 'DHCPDARGS=vlan200' > /etc/sysconfig/dhcpd
+        echo "DHCPDARGS=vlan${VLAN_HQ_CLI}" > /etc/sysconfig/dhcpd
         
         for i in {1..15}; do
-            ip link show vlan200 &>/dev/null && break
+            ip link show vlan${VLAN_HQ_CLI} &>/dev/null && break
             sleep 1
         done
-        ip link set vlan200 up 2>/dev/null || true
-        ip addr add 192.168.200.1/28 dev vlan200 2>/dev/null || true
+        ip link set vlan${VLAN_HQ_CLI} up 2>/dev/null || true
+        ip addr add 192.168.200.1/28 dev vlan${VLAN_HQ_CLI} 2>/dev/null || true
         
         run "dhcpd -t -cf /etc/dhcp/dhcpd.conf"
         run "systemctl enable --now dhcpd"
@@ -419,8 +430,8 @@ EOF
         2024010101 12H 1H 1W 1D )
     IN  NS  ns.au-team.irpo.
 ns      IN  A   192.168.100.2
-hq-rtr  IN  A   192.168.100.1
-br-rtr  IN  A   192.168.30.1
+hq-rtr  IN  A   172.16.30.2
+br-rtr  IN  A   172.16.40.2
 br-fw   IN  A   192.168.30.2
 hq-srv  IN  A   192.168.100.2
 hq-cli  IN  A   192.168.200.2
@@ -457,8 +468,8 @@ EOF
             echo "include \"$BDIR/zones.conf\";" >> /etc/named.conf
         fi
 
-        echo "nameserver 127.0.0.1" > /etc/net/ifaces/vlan100/resolv.conf
-        echo "nameserver 8.8.8.8" >> /etc/net/ifaces/vlan100/resolv.conf
+        echo "nameserver 127.0.0.1" > /etc/net/ifaces/vlan${VLAN_HQ_SRV}/resolv.conf
+        echo "nameserver 8.8.8.8" >> /etc/net/ifaces/vlan${VLAN_HQ_SRV}/resolv.conf
         echo "nameserver 127.0.0.1" > /etc/resolv.conf
 
         run "named-checkconf /etc/named.conf"
@@ -478,6 +489,7 @@ EOF
         setup_iface_static ens20 "$ISP_ENS20"
         setup_iface_static ens21 "$ISP_ENS21"
         echo "nameserver 8.8.8.8" > /etc/net/ifaces/ens19/resolv.conf
+        _opts_dhcp /etc/net/ifaces/ens19
         restart_network
         setup_nat ens19
         setup_timezone
@@ -492,9 +504,9 @@ EOF
         setup_ovs_bridge
         mkdir -p /etc/net/ifaces/hq-sw
         _opts_noip /etc/net/ifaces/hq-sw
-        setup_iface_vlan vlan100 ens20 100 "$HQ_RTR_VLAN100"
-        setup_iface_vlan vlan200 ens21 200 "$HQ_RTR_VLAN200"
-        setup_iface_vlan vlan999 ens20 999 "$HQ_RTR_VLAN999"
+        setup_iface_vlan vlan${VLAN_HQ_SRV} ens20 ${VLAN_HQ_SRV} "192.168.100.1/27"
+        setup_iface_vlan vlan${VLAN_HQ_CLI} ens21 ${VLAN_HQ_CLI} "192.168.200.1/28"
+        setup_iface_vlan vlan${VLAN_HQ_MGMT} ens20 ${VLAN_HQ_MGMT} "192.168.99.1/29"
         setup_iface_gre gre1 "172.16.30.2" "172.16.40.2" "$HQ_RTR_GRE"
         restart_network
         setup_nat ens19
@@ -533,7 +545,7 @@ EOF
     setup_hq_srv() {
         run "hostnamectl set-hostname hq-srv.au-team.irpo"
         setup_iface_trunk ens19
-        setup_iface_vlan vlan100 ens19 100 "$HQ_SRV_ADDR" "192.168.100.1" "static"
+        setup_iface_vlan vlan${VLAN_HQ_SRV} ens19 ${VLAN_HQ_SRV} "$HQ_SRV_ADDR" "192.168.100.1" "static"
         restart_network
         setup_sudo_user sshuser 2027 wheel
         setup_ssh "$SSH_PORT" sshuser
@@ -554,7 +566,7 @@ EOF
     setup_hq_cli() {
         run "hostnamectl set-hostname hq-cli.au-team.irpo"
         setup_iface_trunk ens19
-        setup_iface_vlan vlan200 ens19 200 "" "" "dhcp"
+        setup_iface_vlan vlan${VLAN_HQ_CLI} ens19 ${VLAN_HQ_CLI} "" "" "dhcp"
         restart_network
         setup_timezone
     }

@@ -270,8 +270,9 @@ interface gre1
  no ip ospf passive
 !
 router ospf
- ospf router-id 10.10.10.1
+ ospf router-id 172.16.30.2
  passive-interface default
+ network 172.16.30.0/28 area 0
  network 10.10.10.0/30 area 0
  network 192.168.100.0/27 area 0
  network 192.168.200.0/28 area 0
@@ -299,8 +300,9 @@ interface ens20
  no ip ospf passive
 !
 router ospf
- ospf router-id 10.10.10.2
+ ospf router-id 172.16.40.2
  passive-interface default
+ network 172.16.40.0/28 area 0
  network 10.10.10.0/30 area 0
  network 192.168.30.0/30 area 0
 !

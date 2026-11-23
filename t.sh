@@ -23,6 +23,8 @@ main() {
     local ISP_ENS21="172.16.2.1/28"
 
     local HQ_RTR_ENS19="172.16.1.2/28"
+    local HQ_RTR_TRUNK_IF="ens20"
+    local HQ_RTR_CLI_IF="ens20"
     local HQ_RTR_VLAN100="192.168.100.1/27"
     local HQ_RTR_VLAN200="192.168.200.1/28"
     local HQ_RTR_VLAN999="192.168.99.1/29"
@@ -61,6 +63,17 @@ main() {
         local p="$1" d="$2" v
         read -r -p "$p [$d]: " v
         echo "${v:-$d}"
+    }
+    ask_yn() {
+        local p="$1" d="$2" v
+        while true; do
+            read -r -p "$p [$d]: " v
+            v="${v:-$d}"
+            case "${v,,}" in
+                д|да|y|yes) echo "y"; return 0 ;;
+                н|нет|n|no) echo "n"; return 0 ;;
+            esac
+        done
     }
 
     ip_to_int() {
@@ -160,8 +173,16 @@ main() {
             ;;
         HQ-RTR)
             HQ_RTR_ENS19=$(ask "HQ-RTR ens19 (->ISP)" "$HQ_RTR_ENS19")
+            HQ_RTR_TRUNK_IF=$(ask "Интерфейс HQ-RTR для SRV/MGMT" "$HQ_RTR_TRUNK_IF")
             VLAN_HQ_SRV=$(ask "VLAN ID для HQ-SRV" "$VLAN_HQ_SRV")
             VLAN_HQ_CLI=$(ask "VLAN ID для HQ-CLI" "$VLAN_HQ_CLI")
+            local SAME_IF
+            SAME_IF=$(ask_yn "SRV и клиент на один интерфейс? (д/н)" "д")
+            if [ "$SAME_IF" = "y" ]; then
+                HQ_RTR_CLI_IF="$HQ_RTR_TRUNK_IF"
+            else
+                HQ_RTR_CLI_IF=$(ask "Интерфейс HQ-RTR для клиента" "ens21")
+            fi
             VLAN_MGMT=$(ask "VLAN ID для MGMT" "$VLAN_MGMT")
             HQ_RTR_VLAN100=$(ask "HQ-RTR vlan$VLAN_HQ_SRV" "$HQ_RTR_VLAN100")
             HQ_RTR_VLAN200=$(ask "HQ-RTR vlan$VLAN_HQ_CLI" "$HQ_RTR_VLAN200")
@@ -213,8 +234,6 @@ main() {
 
     local HQ_IP="${HQ_RTR_ENS19%/*}"
     local BR_IP="${BR_RTR_ENS19%/*}"
-    local HQ_GRE_IP="${HQ_GRE_ADDR%/*}"
-    local BR_GRE_IP="${BR_GRE_ADDR%/*}"
 
     local HQ_SRV_NET HQ_CLI_NET_CALC BR_RTR_NET20 BR_FW_NET19 BR_FW_NET20 GRE_NET
     HQ_SRV_NET=$(calc_net "$HQ_RTR_VLAN100")
@@ -482,10 +501,6 @@ interface gre1
  ip ospf network point-to-point
  no ip ospf passive
 !
-interface ens20
- ip ospf network point-to-point
- no ip ospf passive
-!
 router ospf
  ospf router-id $BR_IP
  passive-interface default
@@ -697,10 +712,13 @@ EOF
         run "hostnamectl set-hostname hq-rtr.au-team.irpo"
         setup_iface_static ens19 "$HQ_RTR_ENS19" "${ISP_ENS20%/*}"
         echo "nameserver $DNS_FWD1" > /etc/net/ifaces/ens19/resolv.conf
-        setup_iface_trunk ens20
-        setup_iface_vlan "vlan$VLAN_HQ_SRV" ens20 "$VLAN_HQ_SRV" "$HQ_RTR_VLAN100"
-        setup_iface_vlan "vlan$VLAN_HQ_CLI" ens20 "$VLAN_HQ_CLI" "$HQ_RTR_VLAN200"
-        setup_iface_vlan "vlan$VLAN_MGMT" ens20 "$VLAN_MGMT" "$HQ_RTR_VLAN999"
+        setup_iface_trunk "$HQ_RTR_TRUNK_IF"
+        if [ "$HQ_RTR_CLI_IF" != "$HQ_RTR_TRUNK_IF" ]; then
+            setup_iface_trunk "$HQ_RTR_CLI_IF"
+        fi
+        setup_iface_vlan "vlan$VLAN_HQ_SRV" "$HQ_RTR_TRUNK_IF" "$VLAN_HQ_SRV" "$HQ_RTR_VLAN100"
+        setup_iface_vlan "vlan$VLAN_HQ_CLI" "$HQ_RTR_CLI_IF" "$VLAN_HQ_CLI" "$HQ_RTR_VLAN200"
+        setup_iface_vlan "vlan$VLAN_MGMT" "$HQ_RTR_TRUNK_IF" "$VLAN_MGMT" "$HQ_RTR_VLAN999"
         setup_iface_gre gre1 "$HQ_IP" "$BR_IP" "$HQ_GRE_ADDR"
         restart_network
         setup_nat ens19

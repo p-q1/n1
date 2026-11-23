@@ -1,7 +1,7 @@
 #!/bin/bash
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-    echo "ОШИБКА: запускайте через 'source <(curl -sL ...)'"
+    echo "Ошибка запуска: используйте source <(curl -sL ...)"
     return 1 2>/dev/null || exit 1
 fi
 
@@ -10,7 +10,7 @@ main() {
     trap 'set +u' RETURN
 
     if [ "$EUID" -ne 0 ]; then
-        echo "ОШИБКА: скрипт должен запускаться от имени root (sudo -i)."
+        echo "Нужны права root (sudo -i)"
         return 1
     fi
 
@@ -145,12 +145,12 @@ main() {
     }
 
     clear
-    echo "=== Выбор машины ==="
+    echo "Выбор машины:"
     local MACHINE
     select MACHINE in ISP HQ-RTR BR-RTR BR-FW HQ-SRV BR-SRV HQ-CLI; do
         [ -n "$MACHINE" ] && break
     done
-    echo "Выбрано: $MACHINE"
+    echo "Машина: $MACHINE"
 
     case "$MACHINE" in
         ISP)
@@ -173,6 +173,7 @@ main() {
         BR-RTR)
             BR_RTR_ENS19=$(ask "BR-RTR ens19 (->ISP)" "$BR_RTR_ENS19")
             BR_RTR_ENS20=$(ask "BR-RTR ens20 (->BR-FW)" "$BR_RTR_ENS20")
+            BR_FW_ENS20=$(ask "Сеть/адрес за BR-FW ens20 (->BR-SRV)" "$BR_FW_ENS20")
             BR_GRE_ADDR=$(ask "BR-RTR gre1 адрес" "$BR_GRE_ADDR")
             HQ_GRE_ADDR=$(ask "HQ-RTR gre1 адрес (peer)" "$HQ_GRE_ADDR")
             HQ_SRV_ADDR=$(ask "Адрес HQ-SRV (для DNS)" "$HQ_SRV_ADDR")
@@ -341,10 +342,9 @@ EOF
     }
 
     restart_network() {
-        echo ">>> systemctl restart network"
+        echo "Перезапуск сети"
         systemctl restart network 2>&1 || true
         sleep 3
-        echo ">>> ip -br a"
         ip -br a
     }
 
@@ -355,11 +355,33 @@ EOF
             else
                 echo 'net.ipv4.ip_forward = 1' >> "$f"
             fi
+            if [ -f "$f" ] && grep -q '^[[:space:]]*net.ipv4.conf.all.rp_filter' "$f"; then
+                sed -i -E 's/^[[:space:]]*net\.ipv4\.conf\.all\.rp_filter.*/net.ipv4.conf.all.rp_filter = 2/' "$f"
+            else
+                echo 'net.ipv4.conf.all.rp_filter = 2' >> "$f"
+            fi
+            if [ -f "$f" ] && grep -q '^[[:space:]]*net.ipv4.conf.default.rp_filter' "$f"; then
+                sed -i -E 's/^[[:space:]]*net\.ipv4\.conf\.default\.rp_filter.*/net.ipv4.conf.default.rp_filter = 2/' "$f"
+            else
+                echo 'net.ipv4.conf.default.rp_filter = 2' >> "$f"
+            fi
         done
         sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+        sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null 2>&1 || true
+        sysctl -w net.ipv4.conf.default.rp_filter=2 >/dev/null 2>&1 || true
         sysctl -p /etc/net/sysctl.conf >/dev/null 2>&1 || true
         hist "nano /etc/net/sysctl.conf"
         hist "sysctl -p"
+    }
+
+    open_firewall_host() {
+        enable_ip_forward
+        iptables -F 2>/dev/null || true
+        iptables -P INPUT ACCEPT 2>/dev/null || true
+        iptables -P FORWARD ACCEPT 2>/dev/null || true
+        iptables -P OUTPUT ACCEPT 2>/dev/null || true
+        mkdir -p /etc/sysconfig
+        iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
     }
 
     setup_nat() {
@@ -410,7 +432,7 @@ EOF
         if sshd -t 2>/tmp/sshd_err; then
             run "systemctl restart sshd"
         else
-            echo "Ошибка в sshd_config:"
+            echo "Ошибка sshd_config:"
             cat /tmp/sshd_err
         fi
         hist "nano /etc/openssh/sshd_config"
@@ -457,6 +479,10 @@ service integrated-vtysh-config
 interface gre1
  ip ospf authentication message-digest
  ip ospf message-digest-key 1 md5 $OSPF_PASS
+ ip ospf network point-to-point
+ no ip ospf passive
+!
+interface ens20
  ip ospf network point-to-point
  no ip ospf passive
 !
@@ -530,7 +556,7 @@ EOF
         done
 
         if ! dhcpd -t -cf /etc/dhcp/dhcpd.conf; then
-            echo "ОШИБКА: конфигурация dhcpd невалидна."
+            echo "Ошибка конфига dhcpd"
             return 1
         fi
 
@@ -541,6 +567,11 @@ EOF
         if ! systemctl is-active --quiet dhcpd; then
             systemctl restart dhcpd 2>/dev/null || true
             sleep 2
+        fi
+
+        if ! systemctl is-active --quiet dhcpd; then
+            echo "dhcpd не запустился:"
+            journalctl -u dhcpd -n 15 --no-pager 2>/dev/null || true
         fi
 
         systemctl status dhcpd --no-pager -l | head -n 12
@@ -554,10 +585,11 @@ EOF
         local BDIR="/etc/bind"
         mkdir -p "$BDIR/zone"
 
-        rm -f /etc/rndc.key
-        rndc-confgen -a -c /etc/rndc.key >/dev/null 2>&1
+        if [ ! -s /etc/rndc.key ]; then
+            rm -f /etc/rndc.key
+            rndc-confgen -a -c /etc/rndc.key >/dev/null 2>&1 || true
+        fi
         if [ -f /etc/rndc.key ]; then
-            sed -i 's/^#//g' /etc/rndc.key
             chown root:named /etc/rndc.key 2>/dev/null || true
             chmod 640 /etc/rndc.key
         fi
@@ -705,6 +737,7 @@ EOF
         } > /etc/net/ifaces/ens19/resolv.conf
         setup_iface_static ens20 "$BR_FW_ENS20"
         restart_network
+        ip link set ens20 up 2>/dev/null || true
         setup_nat ens19
         setup_ospf br-fw
         setup_timezone
@@ -715,6 +748,7 @@ EOF
         setup_iface_trunk ens19
         setup_iface_vlan "vlan$VLAN_HQ_SRV" ens19 "$VLAN_HQ_SRV" "$HQ_SRV_ADDR" "${HQ_RTR_VLAN100%/*}" "static"
         restart_network
+        open_firewall_host
         setup_sudo_user sshuser 2027 wheel
         setup_ssh "$SSH_PORT" sshuser
         setup_dns
@@ -729,6 +763,8 @@ EOF
             echo "nameserver $DNS_FWD1"
         } > /etc/net/ifaces/ens19/resolv.conf
         restart_network
+        ip link set ens19 up 2>/dev/null || true
+        open_firewall_host
         setup_sudo_user sshuser 2027 wheel
         setup_ssh "$SSH_PORT" sshuser
         setup_timezone
@@ -739,6 +775,16 @@ EOF
         setup_iface_trunk ens19
         setup_iface_vlan "vlan$VLAN_HQ_CLI" ens19 "$VLAN_HQ_CLI" "" "" "dhcp"
         restart_network
+        open_firewall_host
+        ip link set "vlan$VLAN_HQ_CLI" up 2>/dev/null || true
+        if ! ip -4 addr show "vlan$VLAN_HQ_CLI" 2>/dev/null | grep -q inet; then
+            if command -v dhcpcd >/dev/null 2>&1; then
+                dhcpcd -4 "vlan$VLAN_HQ_CLI" 2>/dev/null || true
+            elif command -v dhclient >/dev/null 2>&1; then
+                dhclient -4 "vlan$VLAN_HQ_CLI" 2>/dev/null || true
+            fi
+            sleep 2
+        fi
         setup_timezone
     }
 
@@ -765,22 +811,22 @@ EOF
     } > "/root/report_${MACHINE}.txt"
 
     echo ""
-    echo "========== ИТОГ =========="
+    echo "Итог:"
     ip -br a 2>/dev/null || true
     ss -tlnp 2>/dev/null | grep ":$SSH_PORT" || echo "SSH не слушает $SSH_PORT"
     if systemctl list-unit-files 2>/dev/null | grep -q '^dhcpd\.service'; then
-        echo ">>> Статус dhcpd:"
+        echo "DHCPD:"
         systemctl is-active dhcpd 2>/dev/null || true
     fi
     if command -v vtysh &>/dev/null; then
-        echo ">>> Ожидание OSPF (10 сек)..."
+        echo "Ожидание OSPF (10 сек)..."
         sleep 10
         vtysh -c 'show ip ospf neighbor' 2>/dev/null || true
         vtysh -c 'show ip route ospf' 2>/dev/null || true
     fi
 
     echo ""
-    echo "Сохранение истории и очистка команды запуска..."
+    echo "Обновление истории команд..."
     history -a
     if [ -f "$HOME/.bash_history" ]; then
         sed -i -E '/(curl|clck\.ru|source[[:space:]]+<\(|exam\.sh|githubusercontent|ini\.sh|bash[[:space:]]+<)/d' "$HOME/.bash_history"
@@ -789,9 +835,7 @@ EOF
     history -r "$HOME/.bash_history"
 
     echo ""
-    echo "════════════════════════════════════════════════════════════════"
-    echo " НАСТРОЙКА ЗАВЕРШЕНА. СИСТЕМА БУДЕТ ПЕРЕЗАГРУЖЕНА ЧЕРЕЗ 3 СЕКУНД."
-    echo "════════════════════════════════════════════════════════════════"
+    echo "Готово. Перезагрузка через 3 сек."
     sync
     sleep 3
     reboot

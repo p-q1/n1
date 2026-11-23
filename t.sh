@@ -771,21 +771,28 @@ EOF
     }
 
     setup_hq_cli() {
+        local vif="vlan$VLAN_HQ_CLI"
         run "hostnamectl set-hostname hq-cli.au-team.irpo"
         setup_iface_trunk ens19
-        setup_iface_vlan "vlan$VLAN_HQ_CLI" ens19 "$VLAN_HQ_CLI" "" "" "dhcp"
+        setup_iface_vlan "$vif" ens19 "$VLAN_HQ_CLI" "" "" "dhcp"
         open_firewall_host
+
+        killall -9 dhcpcd 2>/dev/null || true
+        rm -f "/var/run/dhcpcd-${vif}"*.pid "/run/dhcpcd/${vif}"*.pid "/var/lib/dhcpcd/dhcpcd-${vif}"*.lease 2>/dev/null || true
+
         ip link set ens19 up 2>/dev/null || true
-        ip link add link ens19 name "vlan$VLAN_HQ_CLI" type vlan id "$VLAN_HQ_CLI" 2>/dev/null || true
-        ip link set "vlan$VLAN_HQ_CLI" up 2>/dev/null || true
-        if ! ip -4 addr show "vlan$VLAN_HQ_CLI" 2>/dev/null | grep -q inet; then
-            if command -v dhcpcd >/dev/null 2>&1; then
-                timeout 12 dhcpcd -4 -t 10 "vlan$VLAN_HQ_CLI" 2>/dev/null || true
-            elif command -v dhclient >/dev/null 2>&1; then
-                timeout 12 dhclient -4 -1 "vlan$VLAN_HQ_CLI" 2>/dev/null || true
-            fi
-            sleep 1
+        ip link add link ens19 name "$vif" type vlan id "$VLAN_HQ_CLI" 2>/dev/null || true
+        ip link set "$vif" up 2>/dev/null || true
+
+        if command -v dhcpcd >/dev/null 2>&1; then
+            timeout 15 dhcpcd -4 -q -t 12 "$vif" 2>/dev/null || true
         fi
+
+        if ! ip -4 addr show "$vif" 2>/dev/null | grep -q inet; then
+            timeout 15 etcnet "$vif" start 2>/dev/null || true
+        fi
+
+        ip -br a
         hist "ip -br a"
         setup_timezone
     }

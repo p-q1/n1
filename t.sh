@@ -27,9 +27,11 @@ main() {
     local HQ_SRV_ADDR="192.168.100.2/27"
     local BR_SRV_ADDR="192.168.0.2/28"
     local HQ_CLI_NET="192.168.200.0/28"
+    
     local VLAN_HQ_SRV="100"
     local VLAN_HQ_CLI="200"
     local VLAN_MGMT="999"
+    
     local SSH_PORT="2027"
     local OSPF_PASS="P@ssw0rd"
     local TZ="Europe/Moscow"
@@ -60,6 +62,9 @@ main() {
             HQ_RTR_VLAN200=$(ask "HQ-RTR vlan$VLAN_HQ_CLI" "$HQ_RTR_VLAN200")
             HQ_RTR_VLAN999=$(ask "HQ-RTR vlan$VLAN_MGMT" "$HQ_RTR_VLAN999")
             HQ_RTR_GRE=$(ask "HQ-RTR gre1 ipv4address" "$HQ_RTR_GRE")
+            VLAN_HQ_SRV=$(ask "VLAN ID для HQ-SRV" "$VLAN_HQ_SRV")
+            VLAN_HQ_CLI=$(ask "VLAN ID для HQ-CLI" "$VLAN_HQ_CLI")
+            VLAN_MGMT=$(ask "VLAN ID для MGMT" "$VLAN_MGMT")
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         BR-RTR)
@@ -74,6 +79,7 @@ main() {
             ;;
         HQ-SRV)
             HQ_SRV_ADDR=$(ask "HQ-SRV vlan$VLAN_HQ_SRV" "$HQ_SRV_ADDR")
+            VLAN_HQ_SRV=$(ask "VLAN ID для HQ-SRV" "$VLAN_HQ_SRV")
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         BR-SRV)
@@ -82,9 +88,13 @@ main() {
             ;;
         HQ-CLI)
             HQ_CLI_NET=$(ask "HQ-CLI сеть (DHCP)" "$HQ_CLI_NET")
+            VLAN_HQ_CLI=$(ask "VLAN ID для HQ-CLI" "$VLAN_HQ_CLI")
             ;;
     esac
     TZ=$(ask "Часовой пояс" "$TZ")
+
+    local HQ_IP="${HQ_RTR_ENS19%/*}"
+    local BR_IP="${BR_RTR_ENS19%/*}"
 
     _opts_static() {
         cat > "$1/options" <<EOF
@@ -214,6 +224,8 @@ EOF
         iptables -I FORWARD -p 47 -j ACCEPT 2>/dev/null || true
         iptables -I INPUT -p 89 -j ACCEPT 2>/dev/null || true
         iptables -I FORWARD -p 89 -j ACCEPT 2>/dev/null || true
+        iptables -I FORWARD -i gre1 -j ACCEPT 2>/dev/null || true
+        iptables -I FORWARD -o gre1 -j ACCEPT 2>/dev/null || true
         run "iptables -t nat -A POSTROUTING -o $out_iface -j MASQUERADE"
         run "iptables -P FORWARD ACCEPT"
         run "iptables-save > /etc/sysconfig/iptables"
@@ -271,7 +283,7 @@ service integrated-vtysh-config
 !
 interface gre1
  ip ospf authentication message-digest
- ip ospf message-digest-key 1 md5 P@ssw0rd
+ ip ospf message-digest-key 1 md5 $OSPF_PASS
  ip ospf network point-to-point
  ip ospf mtu-ignore
  ip ospf hello-interval 10
@@ -279,12 +291,12 @@ interface gre1
  no ip ospf passive
 !
 router ospf
- ospf router-id 172.16.30.2
+ ospf router-id $HQ_IP
  passive-interface default
- network 172.16.30.0/28 area 0
+ network $HQ_RTR_ENS19 area 0
  network 10.10.10.0/30 area 0
- network 192.168.100.0/27 area 0
- network 192.168.200.0/28 area 0
+ network $HQ_RTR_VLAN100 area 0
+ network $HQ_RTR_VLAN200 area 0
 !
 line vty
 !
@@ -299,7 +311,7 @@ service integrated-vtysh-config
 !
 interface gre1
  ip ospf authentication message-digest
- ip ospf message-digest-key 1 md5 P@ssw0rd
+ ip ospf message-digest-key 1 md5 $OSPF_PASS
  ip ospf network point-to-point
  ip ospf mtu-ignore
  ip ospf hello-interval 10
@@ -311,11 +323,11 @@ interface ens20
  no ip ospf passive
 !
 router ospf
- ospf router-id 172.16.40.2
+ ospf router-id $BR_IP
  passive-interface default
- network 172.16.40.0/28 area 0
+ network $BR_RTR_ENS19 area 0
  network 10.10.10.0/30 area 0
- network 192.168.30.0/30 area 0
+ network $BR_RTR_ENS20 area 0
 !
 line vty
 !
@@ -333,10 +345,10 @@ interface ens19
  no ip ospf passive
 !
 router ospf
- ospf router-id 192.168.30.2
+ ospf router-id ${BR_FW_ENS19%/*}
  passive-interface default
- network 192.168.30.0/30 area 0
- network 192.168.0.0/28 area 0
+ network $BR_FW_ENS19 area 0
+ network $BR_FW_ENS20 area 0
 !
 line vty
 !
@@ -375,11 +387,11 @@ EOF
         cat > /etc/dhcp/dhcpd.conf <<EOF
 ddns-update-style none;
 authoritative;
-subnet 192.168.200.0 netmask 255.255.255.240 {
-    option routers 192.168.200.1;
+subnet $HQ_CLI_NET netmask 255.255.255.240 {
+    option routers ${HQ_RTR_VLAN200%/*};
     option subnet-mask 255.255.255.240;
     option domain-name "au-team.irpo";
-    option domain-name-servers 192.168.100.2;
+    option domain-name-servers ${HQ_SRV_ADDR%/*};
     range dynamic-bootp 192.168.200.2 192.168.200.10;
 }
 EOF
@@ -390,7 +402,7 @@ EOF
             sleep 1
         done
         ip link set vlan$VLAN_HQ_CLI up 2>/dev/null || true
-        ip addr add 192.168.200.1/28 dev vlan$VLAN_HQ_CLI 2>/dev/null || true
+        ip addr add ${HQ_RTR_VLAN200%/*}/28 dev vlan$VLAN_HQ_CLI 2>/dev/null || true
         
         run "dhcpd -t -cf /etc/dhcp/dhcpd.conf"
         run "systemctl enable --now dhcpd"
@@ -430,15 +442,15 @@ EOF
 @   IN  SOA ns.au-team.irpo. admin.au-team.irpo. (
         2024010101 12H 1H 1W 1D )
     IN  NS  ns.au-team.irpo.
-ns      IN  A   192.168.100.2
-hq-rtr  IN  A   192.168.100.1
-br-rtr  IN  A   192.168.30.1
-br-fw   IN  A   192.168.30.2
-hq-srv  IN  A   192.168.100.2
+ns      IN  A   ${HQ_SRV_ADDR%/*}
+hq-rtr  IN  A   ${HQ_RTR_VLAN100%/*}
+br-rtr  IN  A   ${BR_RTR_ENS20%/*}
+br-fw   IN  A   ${BR_FW_ENS19%/*}
+hq-srv  IN  A   ${HQ_SRV_ADDR%/*}
 hq-cli  IN  A   192.168.200.2
-br-srv  IN  A   192.168.0.2
-docker  IN  A   172.16.30.1
-web     IN  A   172.16.40.1
+br-srv  IN  A   ${BR_SRV_ADDR%/*}
+docker  IN  A   ${ISP_ENS20%/*}
+web     IN  A   ${ISP_ENS21%/*}
 EOF
 
         cat > "$BDIR/zone/100.168.192.rev" <<EOF
@@ -506,7 +518,7 @@ EOF
 
     setup_hq_rtr() {
         run "hostnamectl set-hostname hq-rtr.au-team.irpo"
-        setup_iface_static ens19 "$HQ_RTR_ENS19" "172.16.30.1"
+        setup_iface_static ens19 "$HQ_RTR_ENS19" "${ISP_ENS20%/*}"
         echo "nameserver 8.8.8.8" > /etc/net/ifaces/ens19/resolv.conf
         setup_iface_trunk ens20
         setup_iface_trunk ens21
@@ -516,7 +528,7 @@ EOF
         setup_iface_vlan vlan$VLAN_HQ_SRV ens20 $VLAN_HQ_SRV "$HQ_RTR_VLAN100"
         setup_iface_vlan vlan$VLAN_HQ_CLI ens21 $VLAN_HQ_CLI "$HQ_RTR_VLAN200"
         setup_iface_vlan vlan$VLAN_MGMT ens20 $VLAN_MGMT "$HQ_RTR_VLAN999"
-        setup_iface_gre gre1 "172.16.30.2" "172.16.40.2" "$HQ_RTR_GRE"
+        setup_iface_gre gre1 "$HQ_IP" "$BR_IP" "$HQ_RTR_GRE"
         restart_network
         setup_nat ens19
         setup_sudo_user net_admin "" wheel
@@ -528,11 +540,11 @@ EOF
 
     setup_br_rtr() {
         run "hostnamectl set-hostname br-rtr.au-team.irpo"
-        setup_iface_static ens19 "$BR_RTR_ENS19" "172.16.40.1"
-        echo "nameserver 192.168.100.2" > /etc/net/ifaces/ens19/resolv.conf
+        setup_iface_static ens19 "$BR_RTR_ENS19" "${ISP_ENS21%/*}"
+        echo "nameserver ${HQ_SRV_ADDR%/*}" > /etc/net/ifaces/ens19/resolv.conf
         echo "nameserver 8.8.8.8" >> /etc/net/ifaces/ens19/resolv.conf
         setup_iface_static ens20 "$BR_RTR_ENS20"
-        setup_iface_gre gre1 "172.16.40.2" "172.16.30.2" "$BR_RTR_GRE"
+        setup_iface_gre gre1 "$BR_IP" "$HQ_IP" "$BR_RTR_GRE"
         restart_network
         setup_nat ens19
         setup_sudo_user net_admin "" wheel
@@ -543,8 +555,8 @@ EOF
 
     setup_br_fw() {
         run "hostnamectl set-hostname br-fw.au-team.irpo"
-        setup_iface_static ens19 "$BR_FW_ENS19" "192.168.30.1"
-        echo "nameserver 192.168.100.2" > /etc/net/ifaces/ens19/resolv.conf
+        setup_iface_static ens19 "$BR_FW_ENS19" "${BR_RTR_ENS20%/*}"
+        echo "nameserver ${HQ_SRV_ADDR%/*}" > /etc/net/ifaces/ens19/resolv.conf
         echo "nameserver 8.8.8.8" >> /etc/net/ifaces/ens19/resolv.conf
         setup_iface_static ens20 "$BR_FW_ENS20"
         restart_network
@@ -556,7 +568,7 @@ EOF
     setup_hq_srv() {
         run "hostnamectl set-hostname hq-srv.au-team.irpo"
         setup_iface_trunk ens19
-        setup_iface_vlan vlan$VLAN_HQ_SRV ens19 $VLAN_HQ_SRV "$HQ_SRV_ADDR" "192.168.100.1" "static"
+        setup_iface_vlan vlan$VLAN_HQ_SRV ens19 $VLAN_HQ_SRV "$HQ_SRV_ADDR" "${HQ_RTR_VLAN100%/*}" "static"
         restart_network
         setup_sudo_user sshuser 2027 wheel
         setup_ssh "$SSH_PORT" sshuser
@@ -566,8 +578,8 @@ EOF
 
     setup_br_srv() {
         run "hostnamectl set-hostname br-srv.au-team.irpo"
-        setup_iface_static ens19 "$BR_SRV_ADDR" "192.168.0.1"
-        echo "nameserver 192.168.100.2" > /etc/net/ifaces/ens19/resolv.conf
+        setup_iface_static ens19 "$BR_SRV_ADDR" "${BR_FW_ENS20%/*}"
+        echo "nameserver ${HQ_SRV_ADDR%/*}" > /etc/net/ifaces/ens19/resolv.conf
         echo "nameserver 8.8.8.8" >> /etc/net/ifaces/ens19/resolv.conf
         restart_network
         setup_sudo_user sshuser 2027 wheel

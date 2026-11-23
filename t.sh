@@ -229,7 +229,7 @@ EOF
     restart_network() {
         echo ">>> systemctl restart network"
         systemctl restart network 2>&1 || true
-        sleep 2
+        sleep 3
         echo ">>> ip -br a"
         ip -br a
     }
@@ -387,6 +387,9 @@ EOF
     }
 
     setup_dhcp() {
+        # Отключаем chroot для dhcpd (частая причина падения в ALT Linux)
+        control dhcpd chroot disabled 2>/dev/null || true
+        
         mkdir -p /etc/dhcp /var/lib/dhcpd /var/lib/dhcp
         touch /var/lib/dhcpd/dhcpd.leases /var/lib/dhcp/dhcpd.leases
         chown -R dhcpd:dhcpd /var/lib/dhcpd /var/lib/dhcp 2>/dev/null || true
@@ -402,11 +405,11 @@ subnet $HQ_CLI_NET netmask 255.255.255.240 {
     range dynamic-bootp $DHCP_RANGE_START $DHCP_RANGE_END;
 }
 EOF
-        # Убрали -j /, systemd в ALT Linux сам делает chroot
         echo "DHCPDARGS=\"vlan$VLAN_HQ_CLI\"" > /etc/sysconfig/dhcpd
         
+        # Ждем появления IP на интерфейсе
         for i in {1..15}; do
-            ip link show vlan$VLAN_HQ_CLI &>/dev/null && ip -4 addr show vlan$VLAN_HQ_CLI | grep -q inet && break
+            ip -4 addr show vlan$VLAN_HQ_CLI 2>/dev/null | grep -q inet && break
             sleep 1
         done
         
@@ -417,6 +420,7 @@ EOF
 
         systemctl enable dhcpd >/dev/null 2>&1 || true
         run "systemctl restart dhcpd"
+        sleep 1
         systemctl status dhcpd --no-pager -l | head -n 10
         hist "nano /etc/dhcp/dhcpd.conf"
         hist "nano /etc/sysconfig/dhcpd"

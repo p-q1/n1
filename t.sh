@@ -343,8 +343,8 @@ EOF
 
     restart_network() {
         echo "Перезапуск сети"
-        systemctl restart network 2>&1 || true
-        sleep 3
+        timeout 15 systemctl restart network 2>&1 || true
+        sleep 2
         ip -br a
     }
 
@@ -774,17 +774,19 @@ EOF
         run "hostnamectl set-hostname hq-cli.au-team.irpo"
         setup_iface_trunk ens19
         setup_iface_vlan "vlan$VLAN_HQ_CLI" ens19 "$VLAN_HQ_CLI" "" "" "dhcp"
-        restart_network
         open_firewall_host
+        ip link set ens19 up 2>/dev/null || true
+        ip link add link ens19 name "vlan$VLAN_HQ_CLI" type vlan id "$VLAN_HQ_CLI" 2>/dev/null || true
         ip link set "vlan$VLAN_HQ_CLI" up 2>/dev/null || true
         if ! ip -4 addr show "vlan$VLAN_HQ_CLI" 2>/dev/null | grep -q inet; then
             if command -v dhcpcd >/dev/null 2>&1; then
-                dhcpcd -4 "vlan$VLAN_HQ_CLI" 2>/dev/null || true
+                timeout 12 dhcpcd -4 -t 10 "vlan$VLAN_HQ_CLI" 2>/dev/null || true
             elif command -v dhclient >/dev/null 2>&1; then
-                dhclient -4 "vlan$VLAN_HQ_CLI" 2>/dev/null || true
+                timeout 12 dhclient -4 -1 "vlan$VLAN_HQ_CLI" 2>/dev/null || true
             fi
-            sleep 2
+            sleep 1
         fi
+        hist "ip -br a"
         setup_timezone
     }
 

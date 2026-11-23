@@ -1,4 +1,12 @@
 #!/bin/bash
+# exam.sh — запускать через: source <(curl -sL ...)
+# Скрипт НИЧЕГО не скачивает. Все пакеты должны быть установлены заранее.
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    echo "ОШИБКА: запускайте через 'source <(curl -sL ...)'"
+    echo "Иначе история команд не сохранится."
+    return 1 2>/dev/null || exit 1
+fi
 
 main() {
     set -u
@@ -311,17 +319,19 @@ no ipv6 forwarding
 service integrated-vtysh-config
 !
 interface gre1
+ ip ospf network point-to-point
+ ip ospf mtu-ignore
+!
+interface ens19
  ip ospf authentication message-digest
  ip ospf message-digest-key 1 md5 $OSPF_PASS
  ip ospf network point-to-point
  ip ospf mtu-ignore
- ip ospf hello-interval 10
- ip ospf dead-interval 40
- no ip ospf passive
 !
 router ospf
  ospf router-id $HQ_IP
  passive-interface default
+ no passive-interface ens19
  network $HQ_NET area 0
  network 10.10.10.0/30 area 0
  network $HQ_SRV_NET area 0
@@ -339,13 +349,14 @@ no ipv6 forwarding
 service integrated-vtysh-config
 !
 interface gre1
+ ip ospf network point-to-point
+ ip ospf mtu-ignore
+!
+interface ens19
  ip ospf authentication message-digest
  ip ospf message-digest-key 1 md5 $OSPF_PASS
  ip ospf network point-to-point
  ip ospf mtu-ignore
- ip ospf hello-interval 10
- ip ospf dead-interval 40
- no ip ospf passive
 !
 interface ens20
  ip ospf network point-to-point
@@ -354,6 +365,8 @@ interface ens20
 router ospf
  ospf router-id $BR_IP
  passive-interface default
+ no passive-interface ens19
+ no passive-interface ens20
  network $BR_NET area 0
  network 10.10.10.0/30 area 0
  network $BR_RTR_NET20 area 0
@@ -391,23 +404,6 @@ EOF
         hist "nano /etc/frr/frr.conf"
     }
 
-    setup_ovs_bridge() {
-        run "systemctl enable --now openvswitch"
-        sleep 2
-        ovs-vsctl --may-exist add-br hq-sw
-        ovs-vsctl --may-exist add-port hq-sw ens20
-        ovs-vsctl --may-exist add-port hq-sw ens21
-        ovs-vsctl --may-exist add-port hq-sw vlan$VLAN_HQ_SRV -- set Interface vlan$VLAN_HQ_SRV type=internal
-        ovs-vsctl --may-exist add-port hq-sw vlan$VLAN_HQ_CLI -- set Interface vlan$VLAN_HQ_CLI type=internal
-        ovs-vsctl --may-exist add-port hq-sw vlan$VLAN_MGMT -- set Interface vlan$VLAN_MGMT type=internal
-        ovs-vsctl set Port ens20 vlan_mode=trunk trunks=$VLAN_HQ_SRV
-        ovs-vsctl set Port ens21 vlan_mode=trunk trunks=$VLAN_HQ_CLI
-        ovs-vsctl set Port vlan$VLAN_HQ_SRV vlan_mode=access tag=$VLAN_HQ_SRV
-        ovs-vsctl set Port vlan$VLAN_HQ_CLI vlan_mode=access tag=$VLAN_HQ_CLI
-        ovs-vsctl set Port vlan$VLAN_MGMT vlan_mode=access tag=$VLAN_MGMT
-        hist "ovs-vsctl show"
-    }
-
     setup_dhcp() {
         mkdir -p /etc/dhcp /var/lib/dhcpd /var/lib/dhcp
         touch /var/lib/dhcpd/dhcpd.leases /var/lib/dhcp/dhcpd.leases
@@ -432,8 +428,13 @@ EOF
         done
         ip link set vlan$VLAN_HQ_CLI up 2>/dev/null || true
         
-        run "dhcpd -t -cf /etc/dhcp/dhcpd.conf"
+        if ! dhcpd -t -cf /etc/dhcp/dhcpd.conf; then
+            echo "ОШИБКА: конфигурация dhcpd невалидна."
+            return 1
+        fi
+
         run "systemctl enable --now dhcpd"
+        systemctl status dhcpd --no-pager -l
         hist "nano /etc/dhcp/dhcpd.conf"
         hist "nano /etc/sysconfig/dhcpd"
     }
@@ -523,7 +524,7 @@ EOF
         echo "nameserver 127.0.0.1" > /etc/resolv.conf
 
         run "named-checkconf /etc/named.conf"
-        run "systemctl enable --now bind"
+        run "systemctl enable --now named 2>/dev/null || systemctl enable --now bind"
         hist "nano /etc/named.conf"
         hist "nano /etc/bind/options.conf"
         hist "nano /etc/bind/zones.conf"
@@ -549,12 +550,8 @@ EOF
         setup_iface_static ens19 "$HQ_RTR_ENS19" "${ISP_ENS20%/*}"
         echo "nameserver 8.8.8.8" > /etc/net/ifaces/ens19/resolv.conf
         setup_iface_trunk ens20
-        setup_iface_trunk ens21
-        setup_ovs_bridge
-        mkdir -p /etc/net/ifaces/hq-sw
-        _opts_noip /etc/net/ifaces/hq-sw
         setup_iface_vlan vlan$VLAN_HQ_SRV ens20 $VLAN_HQ_SRV "$HQ_RTR_VLAN100"
-        setup_iface_vlan vlan$VLAN_HQ_CLI ens21 $VLAN_HQ_CLI "$HQ_RTR_VLAN200"
+        setup_iface_vlan vlan$VLAN_HQ_CLI ens20 $VLAN_HQ_CLI "$HQ_RTR_VLAN200"
         setup_iface_vlan vlan$VLAN_MGMT ens20 $VLAN_MGMT "$HQ_RTR_VLAN999"
         setup_iface_gre gre1 "$HQ_IP" "$BR_IP" "$HQ_RTR_GRE"
         restart_network

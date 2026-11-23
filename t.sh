@@ -501,6 +501,10 @@ interface gre1
  ip ospf network point-to-point
  no ip ospf passive
 !
+interface ens20
+ ip ospf network point-to-point
+ no ip ospf passive
+!
 router ospf
  ospf router-id $BR_IP
  passive-interface default

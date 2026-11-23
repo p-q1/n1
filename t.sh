@@ -93,8 +93,37 @@ main() {
     esac
     TZ=$(ask "Часовой пояс" "$TZ")
 
+    calc_net() {
+        local ip_mask=$1
+        local ip=${ip_mask%/*}
+        local mask=${ip_mask#*/}
+        if [ "$mask" = "28" ]; then
+            echo "${ip%.*}.0/28"
+        elif [ "$mask" = "27" ]; then
+            echo "${ip%.*}.0/27"
+        elif [ "$mask" = "30" ]; then
+            echo "${ip%.*}.0/30"
+        elif [ "$mask" = "29" ]; then
+            echo "${ip%.*}.0/29"
+        else
+            echo "$ip_mask"
+        fi
+    }
+
+    local HQ_NET=$(calc_net "$HQ_RTR_ENS19")
+    local BR_NET=$(calc_net "$BR_RTR_ENS19")
+    local HQ_SRV_NET=$(calc_net "$HQ_RTR_VLAN100")
+    local HQ_CLI_NET_CALC=$(calc_net "$HQ_RTR_VLAN200")
+    local BR_RTR_NET20=$(calc_net "$BR_RTR_ENS20")
+    local BR_FW_NET19=$(calc_net "$BR_FW_ENS19")
+    local BR_FW_NET20=$(calc_net "$BR_FW_ENS20")
+
     local HQ_IP="${HQ_RTR_ENS19%/*}"
     local BR_IP="${BR_RTR_ENS19%/*}"
+    
+    local CLI_PREFIX="${HQ_CLI_NET%.*}"
+    local DHCP_RANGE_START="${CLI_PREFIX}.2"
+    local DHCP_RANGE_END="${CLI_PREFIX}.10"
 
     _opts_static() {
         cat > "$1/options" <<EOF
@@ -220,14 +249,14 @@ EOF
     setup_nat() {
         local out_iface="$1"
         enable_ip_forward
-        iptables -I INPUT -p 47 -j ACCEPT 2>/dev/null || true
-        iptables -I FORWARD -p 47 -j ACCEPT 2>/dev/null || true
-        iptables -I INPUT -p 89 -j ACCEPT 2>/dev/null || true
-        iptables -I FORWARD -p 89 -j ACCEPT 2>/dev/null || true
-        iptables -I FORWARD -i gre1 -j ACCEPT 2>/dev/null || true
-        iptables -I FORWARD -o gre1 -j ACCEPT 2>/dev/null || true
+        
+        iptables -F
+        iptables -t nat -F
+        iptables -P INPUT ACCEPT
+        iptables -P FORWARD ACCEPT
+        iptables -P OUTPUT ACCEPT
+
         run "iptables -t nat -A POSTROUTING -o $out_iface -j MASQUERADE"
-        run "iptables -P FORWARD ACCEPT"
         run "iptables-save > /etc/sysconfig/iptables"
         run "systemctl enable --now iptables"
     }
@@ -293,10 +322,10 @@ interface gre1
 router ospf
  ospf router-id $HQ_IP
  passive-interface default
- network $HQ_RTR_ENS19 area 0
+ network $HQ_NET area 0
  network 10.10.10.0/30 area 0
- network $HQ_RTR_VLAN100 area 0
- network $HQ_RTR_VLAN200 area 0
+ network $HQ_SRV_NET area 0
+ network $HQ_CLI_NET_CALC area 0
 !
 line vty
 !
@@ -325,9 +354,9 @@ interface ens20
 router ospf
  ospf router-id $BR_IP
  passive-interface default
- network $BR_RTR_ENS19 area 0
+ network $BR_NET area 0
  network 10.10.10.0/30 area 0
- network $BR_RTR_ENS20 area 0
+ network $BR_RTR_NET20 area 0
 !
 line vty
 !
@@ -347,8 +376,8 @@ interface ens19
 router ospf
  ospf router-id ${BR_FW_ENS19%/*}
  passive-interface default
- network $BR_FW_ENS19 area 0
- network $BR_FW_ENS20 area 0
+ network $BR_FW_NET19 area 0
+ network $BR_FW_NET20 area 0
 !
 line vty
 !
@@ -392,7 +421,7 @@ subnet $HQ_CLI_NET netmask 255.255.255.240 {
     option subnet-mask 255.255.255.240;
     option domain-name "au-team.irpo";
     option domain-name-servers ${HQ_SRV_ADDR%/*};
-    range dynamic-bootp 192.168.200.2 192.168.200.10;
+    range dynamic-bootp $DHCP_RANGE_START $DHCP_RANGE_END;
 }
 EOF
         echo "DHCPDARGS=vlan$VLAN_HQ_CLI" > /etc/sysconfig/dhcpd
@@ -402,7 +431,6 @@ EOF
             sleep 1
         done
         ip link set vlan$VLAN_HQ_CLI up 2>/dev/null || true
-        ip addr add ${HQ_RTR_VLAN200%/*}/28 dev vlan$VLAN_HQ_CLI 2>/dev/null || true
         
         run "dhcpd -t -cf /etc/dhcp/dhcpd.conf"
         run "systemctl enable --now dhcpd"

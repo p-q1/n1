@@ -105,17 +105,11 @@ main() {
         local ip_mask=$1
         local ip=${ip_mask%/*}
         local mask=${ip_mask#*/}
-        if [ "$mask" = "28" ]; then
-            echo "${ip%.*}.0/28"
-        elif [ "$mask" = "27" ]; then
-            echo "${ip%.*}.0/27"
-        elif [ "$mask" = "30" ]; then
-            echo "${ip%.*}.0/30"
-        elif [ "$mask" = "29" ]; then
-            echo "${ip%.*}.0/29"
-        else
-            echo "$ip_mask"
-        fi
+        if [ "$mask" = "28" ]; then echo "${ip%.*}.0/28"
+        elif [ "$mask" = "27" ]; then echo "${ip%.*}.0/27"
+        elif [ "$mask" = "30" ]; then echo "${ip%.*}.0/30"
+        elif [ "$mask" = "29" ]; then echo "${ip%.*}.0/29"
+        else echo "$ip_mask"; fi
     }
 
     local HQ_NET=$(calc_net "$HQ_RTR_ENS19")
@@ -305,6 +299,7 @@ EOF
         hist "nano /etc/openssh/sshd_config"
     }
 
+    # ИСПРАВЛЕННЫЙ БЛОК OSPF ДЛЯ FRR 8
     setup_ospf() {
         local role="$1"
         sed -i 's/^zebra=no/zebra=yes/' /etc/frr/daemons
@@ -318,20 +313,18 @@ hostname hq-rtr
 no ipv6 forwarding
 service integrated-vtysh-config
 !
-interface gre1
- ip ospf network point-to-point
- ip ospf mtu-ignore
-!
 interface ens19
  ip ospf authentication message-digest
  ip ospf message-digest-key 1 md5 $OSPF_PASS
  ip ospf network point-to-point
- ip ospf mtu-ignore
+ no ip ospf passive
+!
+interface gre1
+ ip ospf network point-to-point
 !
 router ospf
  ospf router-id $HQ_IP
  passive-interface default
- no passive-interface ens19
  network $HQ_NET area 0
  network 10.10.10.0/30 area 0
  network $HQ_SRV_NET area 0
@@ -348,25 +341,22 @@ hostname br-rtr
 no ipv6 forwarding
 service integrated-vtysh-config
 !
-interface gre1
- ip ospf network point-to-point
- ip ospf mtu-ignore
-!
 interface ens19
  ip ospf authentication message-digest
  ip ospf message-digest-key 1 md5 $OSPF_PASS
  ip ospf network point-to-point
- ip ospf mtu-ignore
+ no ip ospf passive
 !
 interface ens20
  ip ospf network point-to-point
  no ip ospf passive
 !
+interface gre1
+ ip ospf network point-to-point
+!
 router ospf
  ospf router-id $BR_IP
  passive-interface default
- no passive-interface ens19
- no passive-interface ens20
  network $BR_NET area 0
  network 10.10.10.0/30 area 0
  network $BR_RTR_NET20 area 0
@@ -404,6 +394,7 @@ EOF
         hist "nano /etc/frr/frr.conf"
     }
 
+    # ИСПРАВЛЕННЫЙ БЛОК DHCP (устранение ошибки chroot)
     setup_dhcp() {
         mkdir -p /etc/dhcp /var/lib/dhcpd /var/lib/dhcp
         touch /var/lib/dhcpd/dhcpd.leases /var/lib/dhcp/dhcpd.leases
@@ -420,7 +411,8 @@ subnet $HQ_CLI_NET netmask 255.255.255.240 {
     range dynamic-bootp $DHCP_RANGE_START $DHCP_RANGE_END;
 }
 EOF
-        echo "DHCPDARGS=vlan$VLAN_HQ_CLI" > /etc/sysconfig/dhcpd
+        # Ключевые флаги -j / и -lf для работы вне стандартного chroot
+        echo "DHCPDARGS=\"-j / -lf /var/lib/dhcpd/dhcpd.leases vlan$VLAN_HQ_CLI\"" > /etc/sysconfig/dhcpd
         
         for i in {1..15}; do
             ip link show vlan$VLAN_HQ_CLI &>/dev/null && break
@@ -635,6 +627,8 @@ EOF
     ip -br a 2>/dev/null || true
     ss -tlnp 2>/dev/null | grep ":$SSH_PORT" || echo "SSH не слушает $SSH_PORT"
     if command -v vtysh &>/dev/null; then
+        echo ">>> Ожидание установления OSPF-соседства (10 сек)..."
+        sleep 10
         vtysh -c 'show ip ospf neighbor' 2>/dev/null || true
     fi
 

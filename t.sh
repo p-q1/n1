@@ -1,15 +1,13 @@
 #!/bin/bash
-# exam.sh — запускать через: source <(curl -sL ...)
-# Скрипт НИЧЕГО не скачивает. Все пакеты должны быть установлены заранее.
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     echo "ОШИБКА: запускайте через 'source <(curl -sL ...)'"
-    echo "Иначе история команд не сохранится."
     return 1 2>/dev/null || exit 1
 fi
 
 main() {
     set -u
+    trap 'set +u' RETURN
 
     if [ "$EUID" -ne 0 ]; then
         echo "ОШИБКА: скрипт должен запускаться от имени root (sudo -i)."
@@ -20,36 +18,131 @@ main() {
     systemctl disable NetworkManager 2>/dev/null || true
     systemctl mask NetworkManager 2>/dev/null || true
 
-    local ISP_ENS20="172.16.30.1/28"
-    local ISP_ENS21="172.16.40.1/28"
-    local HQ_RTR_ENS19="172.16.30.2/28"
+    local ISP_EXT_IF="ens19"
+    local ISP_ENS20="172.16.1.1/28"
+    local ISP_ENS21="172.16.2.1/28"
+
+    local HQ_RTR_ENS19="172.16.1.2/28"
     local HQ_RTR_VLAN100="192.168.100.1/27"
     local HQ_RTR_VLAN200="192.168.200.1/28"
     local HQ_RTR_VLAN999="192.168.99.1/29"
-    local HQ_RTR_GRE="10.10.10.1 peer 10.10.10.2"
-    local BR_RTR_ENS19="172.16.40.2/28"
+    local HQ_GRE_ADDR="10.10.10.1/30"
+
+    local BR_RTR_ENS19="172.16.2.2/28"
     local BR_RTR_ENS20="192.168.30.1/30"
-    local BR_RTR_GRE="10.10.10.2 peer 10.10.10.1"
+    local BR_GRE_ADDR="10.10.10.2/30"
+
     local BR_FW_ENS19="192.168.30.2/30"
     local BR_FW_ENS20="192.168.0.1/28"
+
     local HQ_SRV_ADDR="192.168.100.2/27"
     local BR_SRV_ADDR="192.168.0.2/28"
     local HQ_CLI_NET="192.168.200.0/28"
-    
+
     local VLAN_HQ_SRV="100"
     local VLAN_HQ_CLI="200"
     local VLAN_MGMT="999"
-    
+
     local SSH_PORT="2027"
     local OSPF_PASS="P@ssw0rd"
+    local DNS_FWD1="77.88.8.7"
+    local DNS_FWD2="77.88.8.3"
     local TZ="Europe/Moscow"
 
-    hist() { 
+    hist() {
         history -s "$1" 2>/dev/null || true
         echo "$1" >> "$HOME/.bash_history"
     }
-    run() { eval "$1"; hist "$1"; }
-    ask() { local p="$1" d="$2" v; read -r -p "$p [$d]: " v; echo "${v:-$d}"; }
+    run() {
+        eval "$1"
+        hist "$1"
+    }
+    ask() {
+        local p="$1" d="$2" v
+        read -r -p "$p [$d]: " v
+        echo "${v:-$d}"
+    }
+
+    ip_to_int() {
+        local o1 o2 o3 o4
+        IFS=. read -r o1 o2 o3 o4 <<< "$1"
+        echo $(( (o1 << 24) + (o2 << 16) + (o3 << 8) + o4 ))
+    }
+
+    int_to_ip() {
+        local n="$1"
+        printf "%d.%d.%d.%d" \
+            $(( (n >> 24) & 255 )) \
+            $(( (n >> 16) & 255 )) \
+            $(( (n >> 8) & 255 )) \
+            $(( n & 255 ))
+    }
+
+    prefix_to_mask_int() {
+        local prefix="$1"
+        if [ "$prefix" -le 0 ]; then
+            echo 0
+        elif [ "$prefix" -ge 32 ]; then
+            echo 4294967295
+        else
+            echo $(( (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
+        fi
+    }
+
+    prefix_to_netmask() {
+        local prefix="$1"
+        int_to_ip "$(prefix_to_mask_int "$prefix")"
+    }
+
+    calc_net() {
+        local ip_mask="$1"
+        local ip="${ip_mask%/*}"
+        local prefix="${ip_mask#*/}"
+        if ! [[ "$prefix" =~ ^[0-9]+$ ]] || [ "$prefix" -lt 0 ] || [ "$prefix" -gt 32 ]; then
+            echo "$ip_mask"
+            return
+        fi
+        local ip_int mask_int net_int
+        ip_int=$(ip_to_int "$ip")
+        mask_int=$(prefix_to_mask_int "$prefix")
+        net_int=$(( ip_int & mask_int ))
+        printf "%s/%d\n" "$(int_to_ip "$net_int")" "$prefix"
+    }
+
+    calc_dhcp_pool() {
+        local cidr="$1"
+        local gw_ip="$2"
+        local net_only="${cidr%/*}"
+        local prefix="${cidr#*/}"
+        local net_int mask_int bcast_int first_int last_int gw_int start_int end_int
+
+        net_int=$(ip_to_int "$net_only")
+        mask_int=$(prefix_to_mask_int "$prefix")
+        net_int=$(( net_int & mask_int ))
+        bcast_int=$(( net_int | (~mask_int & 0xFFFFFFFF) ))
+        first_int=$(( net_int + 2 ))
+        last_int=$(( bcast_int - 1 ))
+        gw_int=$(ip_to_int "$gw_ip")
+
+        if [ "$last_int" -lt "$first_int" ]; then
+            first_int=$(( net_int + 1 ))
+        fi
+
+        start_int="$first_int"
+        if [ "$start_int" -eq "$gw_int" ]; then
+            start_int=$(( start_int + 1 ))
+        fi
+
+        end_int=$(( start_int + 10 ))
+        if [ "$end_int" -gt "$last_int" ]; then
+            end_int="$last_int"
+        fi
+        if [ "$end_int" -eq "$gw_int" ] && [ "$end_int" -gt "$start_int" ]; then
+            end_int=$(( end_int - 1 ))
+        fi
+
+        echo "$(int_to_ip "$start_int") $(int_to_ip "$end_int")"
+    }
 
     clear
     echo "=== Выбор машины ==="
@@ -61,71 +154,86 @@ main() {
 
     case "$MACHINE" in
         ISP)
+            ISP_EXT_IF=$(ask "Внешний интерфейс ISP (DHCP)" "$ISP_EXT_IF")
             ISP_ENS20=$(ask "ISP ens20 (->HQ)" "$ISP_ENS20")
             ISP_ENS21=$(ask "ISP ens21 (->BR)" "$ISP_ENS21")
             ;;
         HQ-RTR)
             HQ_RTR_ENS19=$(ask "HQ-RTR ens19 (->ISP)" "$HQ_RTR_ENS19")
-            HQ_RTR_VLAN100=$(ask "HQ-RTR vlan$VLAN_HQ_SRV" "$HQ_RTR_VLAN100")
-            HQ_RTR_VLAN200=$(ask "HQ-RTR vlan$VLAN_HQ_CLI" "$HQ_RTR_VLAN200")
-            HQ_RTR_VLAN999=$(ask "HQ-RTR vlan$VLAN_MGMT" "$HQ_RTR_VLAN999")
-            HQ_RTR_GRE=$(ask "HQ-RTR gre1 ipv4address" "$HQ_RTR_GRE")
             VLAN_HQ_SRV=$(ask "VLAN ID для HQ-SRV" "$VLAN_HQ_SRV")
             VLAN_HQ_CLI=$(ask "VLAN ID для HQ-CLI" "$VLAN_HQ_CLI")
             VLAN_MGMT=$(ask "VLAN ID для MGMT" "$VLAN_MGMT")
+            HQ_RTR_VLAN100=$(ask "HQ-RTR vlan$VLAN_HQ_SRV" "$HQ_RTR_VLAN100")
+            HQ_RTR_VLAN200=$(ask "HQ-RTR vlan$VLAN_HQ_CLI" "$HQ_RTR_VLAN200")
+            HQ_RTR_VLAN999=$(ask "HQ-RTR vlan$VLAN_MGMT" "$HQ_RTR_VLAN999")
+            HQ_GRE_ADDR=$(ask "HQ-RTR gre1 адрес" "$HQ_GRE_ADDR")
+            BR_GRE_ADDR=$(ask "BR-RTR gre1 адрес (peer)" "$BR_GRE_ADDR")
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         BR-RTR)
             BR_RTR_ENS19=$(ask "BR-RTR ens19 (->ISP)" "$BR_RTR_ENS19")
             BR_RTR_ENS20=$(ask "BR-RTR ens20 (->BR-FW)" "$BR_RTR_ENS20")
-            BR_RTR_GRE=$(ask "BR-RTR gre1 ipv4address" "$BR_RTR_GRE")
+            BR_GRE_ADDR=$(ask "BR-RTR gre1 адрес" "$BR_GRE_ADDR")
+            HQ_GRE_ADDR=$(ask "HQ-RTR gre1 адрес (peer)" "$HQ_GRE_ADDR")
+            HQ_SRV_ADDR=$(ask "Адрес HQ-SRV (для DNS)" "$HQ_SRV_ADDR")
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         BR-FW)
             BR_FW_ENS19=$(ask "BR-FW ens19 (->BR-RTR)" "$BR_FW_ENS19")
             BR_FW_ENS20=$(ask "BR-FW ens20 (->BR-SRV)" "$BR_FW_ENS20")
+            HQ_SRV_ADDR=$(ask "Адрес HQ-SRV (для DNS)" "$HQ_SRV_ADDR")
             ;;
         HQ-SRV)
-            HQ_SRV_ADDR=$(ask "HQ-SRV vlan$VLAN_HQ_SRV" "$HQ_SRV_ADDR")
             VLAN_HQ_SRV=$(ask "VLAN ID для HQ-SRV" "$VLAN_HQ_SRV")
+            HQ_SRV_ADDR=$(ask "HQ-SRV vlan$VLAN_HQ_SRV" "$HQ_SRV_ADDR")
+            HQ_RTR_VLAN100=$(ask "Шлюз HQ-RTR vlan$VLAN_HQ_SRV" "$HQ_RTR_VLAN100")
+            HQ_RTR_VLAN200=$(ask "Адрес HQ-RTR vlan$VLAN_HQ_CLI (для DNS)" "$HQ_RTR_VLAN200")
+            BR_RTR_ENS20=$(ask "Адрес BR-RTR ens20 (для DNS)" "$BR_RTR_ENS20")
+            BR_FW_ENS19=$(ask "Адрес BR-FW ens19 (для DNS)" "$BR_FW_ENS19")
+            BR_SRV_ADDR=$(ask "Адрес BR-SRV (для DNS)" "$BR_SRV_ADDR")
+            ISP_ENS20=$(ask "Адрес ISP ens20 (для DNS)" "$ISP_ENS20")
+            ISP_ENS21=$(ask "Адрес ISP ens21 (для DNS)" "$ISP_ENS21")
+            DNS_FWD1=$(ask "DNS forwarder 1" "$DNS_FWD1")
+            DNS_FWD2=$(ask "DNS forwarder 2" "$DNS_FWD2")
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         BR-SRV)
             BR_SRV_ADDR=$(ask "BR-SRV ens19" "$BR_SRV_ADDR")
+            BR_FW_ENS20=$(ask "Шлюз BR-FW ens20" "$BR_FW_ENS20")
+            HQ_SRV_ADDR=$(ask "Адрес HQ-SRV (для DNS)" "$HQ_SRV_ADDR")
             SSH_PORT=$(ask "Порт SSH" "$SSH_PORT")
             ;;
         HQ-CLI)
-            HQ_CLI_NET=$(ask "HQ-CLI сеть (DHCP)" "$HQ_CLI_NET")
             VLAN_HQ_CLI=$(ask "VLAN ID для HQ-CLI" "$VLAN_HQ_CLI")
+            HQ_CLI_NET=$(ask "HQ-CLI сеть (DHCP)" "$HQ_CLI_NET")
             ;;
     esac
     TZ=$(ask "Часовой пояс" "$TZ")
 
-    calc_net() {
-        local ip_mask=$1
-        local ip=${ip_mask%/*}
-        local mask=${ip_mask#*/}
-        if [ "$mask" = "28" ]; then echo "${ip%.*}.0/28"
-        elif [ "$mask" = "27" ]; then echo "${ip%.*}.0/27"
-        elif [ "$mask" = "30" ]; then echo "${ip%.*}.0/30"
-        elif [ "$mask" = "29" ]; then echo "${ip%.*}.0/29"
-        else echo "$ip_mask"; fi
-    }
-
-    local HQ_NET=$(calc_net "$HQ_RTR_ENS19")
-    local BR_NET=$(calc_net "$BR_RTR_ENS19")
-    local HQ_SRV_NET=$(calc_net "$HQ_RTR_VLAN100")
-    local HQ_CLI_NET_CALC=$(calc_net "$HQ_RTR_VLAN200")
-    local BR_RTR_NET20=$(calc_net "$BR_RTR_ENS20")
-    local BR_FW_NET19=$(calc_net "$BR_FW_ENS19")
-    local BR_FW_NET20=$(calc_net "$BR_FW_ENS20")
-
     local HQ_IP="${HQ_RTR_ENS19%/*}"
     local BR_IP="${BR_RTR_ENS19%/*}"
-    
-    local CLI_PREFIX="${HQ_CLI_NET%.*}"
-    local DHCP_RANGE_START="${CLI_PREFIX}.2"
-    local DHCP_RANGE_END="${CLI_PREFIX}.10"
+    local HQ_GRE_IP="${HQ_GRE_ADDR%/*}"
+    local BR_GRE_IP="${BR_GRE_ADDR%/*}"
+
+    local HQ_SRV_NET HQ_CLI_NET_CALC BR_RTR_NET20 BR_FW_NET19 BR_FW_NET20 GRE_NET
+    HQ_SRV_NET=$(calc_net "$HQ_RTR_VLAN100")
+    HQ_CLI_NET_CALC=$(calc_net "$HQ_RTR_VLAN200")
+    BR_RTR_NET20=$(calc_net "$BR_RTR_ENS20")
+    BR_FW_NET19=$(calc_net "$BR_FW_ENS19")
+    BR_FW_NET20=$(calc_net "$BR_FW_ENS20")
+    GRE_NET=$(calc_net "$HQ_GRE_ADDR")
+
+    local GW_CLI="${HQ_RTR_VLAN200%/*}"
+    local CLI_NET_CIDR
+    CLI_NET_CIDR=$(calc_net "$HQ_CLI_NET")
+    local CLI_NET_IP="${CLI_NET_CIDR%/*}"
+    local CLI_PREFIX_LEN="${CLI_NET_CIDR#*/}"
+    local CLI_NETMASK
+    CLI_NETMASK=$(prefix_to_netmask "$CLI_PREFIX_LEN")
+    local DHCP_POOL DHCP_RANGE_START DHCP_RANGE_END
+    DHCP_POOL=$(calc_dhcp_pool "$CLI_NET_CIDR" "$GW_CLI")
+    DHCP_RANGE_START="${DHCP_POOL%% *}"
+    DHCP_RANGE_END="${DHCP_POOL##* }"
 
     _opts_static() {
         cat > "$1/options" <<EOF
@@ -138,6 +246,7 @@ NM_CONTROLLED=no
 SYSTEMD_CONTROLLED=no
 EOF
     }
+
     _opts_dhcp() {
         cat > "$1/options" <<EOF
 TYPE=eth
@@ -149,6 +258,7 @@ NM_CONTROLLED=no
 SYSTEMD_CONTROLLED=no
 EOF
     }
+
     _opts_noip() {
         cat > "$1/options" <<EOF
 TYPE=eth
@@ -212,14 +322,18 @@ EOF
         local d="/etc/net/ifaces/$iface"
         mkdir -p "$d"
         cat > "$d/options" <<EOF
+TYPE=iptun
+TUNTYPE=gre
 TUNLOCAL=$local_ip
 TUNREMOTE=$remote_ip
-TUNTYPE=gre
-TYPE=iptun
 TUNTTL=64
 TUNMTU=1476
 TUNOPTIONS='ttl 64'
-DISABLE=no
+CONFIG_IPV4=yes
+ONBOOT=yes
+DISABLED=no
+NM_CONTROLLED=no
+SYSTEMD_CONTROLLED=no
 EOF
         echo "$addr" > "$d/ipv4address"
         hist "nano /etc/net/ifaces/$iface/options"
@@ -251,7 +365,7 @@ EOF
     setup_nat() {
         local out_iface="$1"
         enable_ip_forward
-        
+
         iptables -F
         iptables -t nat -F
         iptables -P INPUT ACCEPT
@@ -259,6 +373,7 @@ EOF
         iptables -P OUTPUT ACCEPT
 
         run "iptables -t nat -A POSTROUTING -o $out_iface -j MASQUERADE"
+        mkdir -p /etc/sysconfig
         run "iptables-save > /etc/sysconfig/iptables"
         systemctl enable iptables >/dev/null 2>&1 || true
         systemctl restart iptables >/dev/null 2>&1 || true
@@ -283,6 +398,7 @@ EOF
 
     setup_ssh() {
         local port="$1" user="$2"
+        mkdir -p /etc/openssh
         echo 'Authorized access only' > /etc/openssh/banner
         sed -i -E '/^[[:space:]]*#?[[:space:]]*(Port|MaxAuthTries|Banner|AllowUsers)([[:space:]]|$)/d' /etc/openssh/sshd_config
         cat >> /etc/openssh/sshd_config <<EOF
@@ -302,6 +418,7 @@ EOF
 
     setup_ospf() {
         local role="$1"
+        enable_ip_forward
         sed -i 's/^zebra=no/zebra=yes/' /etc/frr/daemons
         sed -i 's/^ospfd=no/ospfd=yes/' /etc/frr/daemons
 
@@ -322,7 +439,7 @@ interface gre1
 router ospf
  ospf router-id $HQ_IP
  passive-interface default
- network 10.10.10.0/30 area 0
+ network $GRE_NET area 0
  network $HQ_SRV_NET area 0
  network $HQ_CLI_NET_CALC area 0
 !
@@ -343,15 +460,12 @@ interface gre1
  ip ospf network point-to-point
  no ip ospf passive
 !
-interface ens20
- ip ospf network point-to-point
- no ip ospf passive
-!
 router ospf
  ospf router-id $BR_IP
  passive-interface default
- network 10.10.10.0/30 area 0
+ network $GRE_NET area 0
  network $BR_RTR_NET20 area 0
+ network $BR_FW_NET20 area 0
 !
 line vty
 !
@@ -387,32 +501,34 @@ EOF
     }
 
     setup_dhcp() {
-        # Отключаем chroot для dhcpd (частая причина падения в ALT Linux)
         control dhcpd chroot disabled 2>/dev/null || true
-        
-        mkdir -p /etc/dhcp /var/lib/dhcpd /var/lib/dhcp
-        touch /var/lib/dhcpd/dhcpd.leases /var/lib/dhcp/dhcpd.leases
+
+        mkdir -p /etc/dhcp /var/lib/dhcpd /var/lib/dhcp /etc/sysconfig
+        [ -f /var/lib/dhcpd/dhcpd.leases ] || : > /var/lib/dhcpd/dhcpd.leases
+        [ -f /var/lib/dhcp/dhcpd.leases ] || : > /var/lib/dhcp/dhcpd.leases
         chown -R dhcpd:dhcpd /var/lib/dhcpd /var/lib/dhcp 2>/dev/null || true
 
         cat > /etc/dhcp/dhcpd.conf <<EOF
 ddns-update-style none;
 authoritative;
-subnet $HQ_CLI_NET netmask 255.255.255.240 {
-    option routers ${HQ_RTR_VLAN200%/*};
-    option subnet-mask 255.255.255.240;
+subnet $CLI_NET_IP netmask $CLI_NETMASK {
+    option routers $GW_CLI;
+    option subnet-mask $CLI_NETMASK;
     option domain-name "au-team.irpo";
     option domain-name-servers ${HQ_SRV_ADDR%/*};
     range dynamic-bootp $DHCP_RANGE_START $DHCP_RANGE_END;
 }
 EOF
-        echo "DHCPDARGS=\"vlan$VLAN_HQ_CLI\"" > /etc/sysconfig/dhcpd
-        
-        # Ждем появления IP на интерфейсе
+        cat > /etc/sysconfig/dhcpd <<EOF
+CHROOT=""
+DHCPDARGS="vlan$VLAN_HQ_CLI"
+EOF
+
         for i in {1..15}; do
-            ip -4 addr show vlan$VLAN_HQ_CLI 2>/dev/null | grep -q inet && break
+            ip -4 addr show "vlan$VLAN_HQ_CLI" 2>/dev/null | grep -q inet && break
             sleep 1
         done
-        
+
         if ! dhcpd -t -cf /etc/dhcp/dhcpd.conf; then
             echo "ОШИБКА: конфигурация dhcpd невалидна."
             return 1
@@ -420,8 +536,14 @@ EOF
 
         systemctl enable dhcpd >/dev/null 2>&1 || true
         run "systemctl restart dhcpd"
-        sleep 1
-        systemctl status dhcpd --no-pager -l | head -n 10
+        sleep 2
+
+        if ! systemctl is-active --quiet dhcpd; then
+            systemctl restart dhcpd 2>/dev/null || true
+            sleep 2
+        fi
+
+        systemctl status dhcpd --no-pager -l | head -n 12
         hist "nano /etc/dhcp/dhcpd.conf"
         hist "nano /etc/sysconfig/dhcpd"
     }
@@ -442,7 +564,7 @@ EOF
 
         if [ -f "$BDIR/options.conf" ]; then
             if ! grep -q 'dnssec-validation' "$BDIR/options.conf"; then
-                sed -i '/options {/a \    dnssec-validation no;\n    listen-on port 53 { any; };\n    listen-on-v6 port 53 { any; };\n    allow-query { any; };\n    recursion yes;\n    forwarders { 8.8.8.8; };' "$BDIR/options.conf"
+                sed -i "/options {/a \    dnssec-validation no;\n    listen-on port 53 { any; };\n    listen-on-v6 port 53 { any; };\n    allow-query { any; };\n    recursion yes;\n    forwarders { $DNS_FWD1; $DNS_FWD2; };" "$BDIR/options.conf"
             fi
         fi
 
@@ -456,14 +578,14 @@ EOF
         cat > "$BDIR/zone/au-team.irpo" <<EOF
 \$TTL 1D
 @   IN  SOA ns.au-team.irpo. admin.au-team.irpo. (
-        2024010101 12H 1H 1W 1D )
+        2026112301 12H 1H 1W 1D )
     IN  NS  ns.au-team.irpo.
 ns      IN  A   ${HQ_SRV_ADDR%/*}
 hq-rtr  IN  A   ${HQ_RTR_VLAN100%/*}
 br-rtr  IN  A   ${BR_RTR_ENS20%/*}
 br-fw   IN  A   ${BR_FW_ENS19%/*}
 hq-srv  IN  A   ${HQ_SRV_ADDR%/*}
-hq-cli  IN  A   192.168.200.2
+hq-cli  IN  A   ${DHCP_RANGE_START}
 br-srv  IN  A   ${BR_SRV_ADDR%/*}
 docker  IN  A   ${ISP_ENS20%/*}
 web     IN  A   ${ISP_ENS21%/*}
@@ -472,28 +594,28 @@ EOF
         cat > "$BDIR/zone/100.168.192.rev" <<EOF
 \$TTL 1D
 @   IN  SOA ns.au-team.irpo. admin.au-team.irpo. (
-        2024010101 12H 1H 1W 1D )
+        2026112301 12H 1H 1W 1D )
     IN  NS  ns.au-team.irpo.
-1   IN  PTR hq-rtr.au-team.irpo.
-2   IN  PTR hq-srv.au-team.irpo.
+${HQ_RTR_VLAN100##*.}   IN  PTR hq-rtr.au-team.irpo.
+${HQ_SRV_ADDR##*.}      IN  PTR hq-srv.au-team.irpo.
 EOF
 
         cat > "$BDIR/zone/0.168.192.rev" <<EOF
 \$TTL 1D
 @   IN  SOA ns.au-team.irpo. admin.au-team.irpo. (
-        2024010101 12H 1H 1W 1D )
+        2026112301 12H 1H 1W 1D )
     IN  NS  ns.au-team.irpo.
-1   IN  PTR br-fw.au-team.irpo.
-2   IN  PTR br-srv.au-team.irpo.
+${BR_FW_ENS20##*.}      IN  PTR br-fw.au-team.irpo.
+${BR_SRV_ADDR##*.}      IN  PTR br-srv.au-team.irpo.
 EOF
 
         cat > "$BDIR/zone/30.168.192.rev" <<EOF
 \$TTL 1D
 @   IN  SOA ns.au-team.irpo. admin.au-team.irpo. (
-        2024010101 12H 1H 1W 1D )
+        2026112301 12H 1H 1W 1D )
     IN  NS  ns.au-team.irpo.
-1   IN  PTR br-rtr.au-team.irpo.
-2   IN  PTR br-fw.au-team.irpo.
+${BR_RTR_ENS20##*.}      IN  PTR br-rtr.au-team.irpo.
+${BR_FW_ENS19##*.}      IN  PTR br-fw.au-team.irpo.
 EOF
 
         chown root:named "$BDIR/zone/"* 2>/dev/null || true
@@ -506,8 +628,11 @@ EOF
             echo "include \"$BDIR/zones.conf\";" >> /etc/named.conf
         fi
 
-        echo "nameserver 127.0.0.1" > /etc/net/ifaces/vlan$VLAN_HQ_SRV/resolv.conf
-        echo "nameserver 8.8.8.8" >> /etc/net/ifaces/vlan$VLAN_HQ_SRV/resolv.conf
+        mkdir -p "/etc/net/ifaces/vlan$VLAN_HQ_SRV"
+        {
+            echo "nameserver 127.0.0.1"
+            echo "nameserver $DNS_FWD1"
+        } > "/etc/net/ifaces/vlan$VLAN_HQ_SRV/resolv.conf"
         echo "nameserver 127.0.0.1" > /etc/resolv.conf
 
         run "named-checkconf /etc/named.conf"
@@ -525,23 +650,26 @@ EOF
 
     setup_isp() {
         run "hostnamectl set-hostname isp.au-team.irpo"
+        local d_ext="/etc/net/ifaces/$ISP_EXT_IF"
+        mkdir -p "$d_ext"
+        _opts_dhcp "$d_ext"
+        echo "nameserver $DNS_FWD1" > "$d_ext/resolv.conf"
         setup_iface_static ens20 "$ISP_ENS20"
         setup_iface_static ens21 "$ISP_ENS21"
-        echo "nameserver 8.8.8.8" > /etc/net/ifaces/ens19/resolv.conf
         restart_network
-        setup_nat ens19
+        setup_nat "$ISP_EXT_IF"
         setup_timezone
     }
 
     setup_hq_rtr() {
         run "hostnamectl set-hostname hq-rtr.au-team.irpo"
         setup_iface_static ens19 "$HQ_RTR_ENS19" "${ISP_ENS20%/*}"
-        echo "nameserver 8.8.8.8" > /etc/net/ifaces/ens19/resolv.conf
+        echo "nameserver $DNS_FWD1" > /etc/net/ifaces/ens19/resolv.conf
         setup_iface_trunk ens20
-        setup_iface_vlan vlan$VLAN_HQ_SRV ens20 $VLAN_HQ_SRV "$HQ_RTR_VLAN100"
-        setup_iface_vlan vlan$VLAN_HQ_CLI ens20 $VLAN_HQ_CLI "$HQ_RTR_VLAN200"
-        setup_iface_vlan vlan$VLAN_MGMT ens20 $VLAN_MGMT "$HQ_RTR_VLAN999"
-        setup_iface_gre gre1 "$HQ_IP" "$BR_IP" "$HQ_RTR_GRE"
+        setup_iface_vlan "vlan$VLAN_HQ_SRV" ens20 "$VLAN_HQ_SRV" "$HQ_RTR_VLAN100"
+        setup_iface_vlan "vlan$VLAN_HQ_CLI" ens20 "$VLAN_HQ_CLI" "$HQ_RTR_VLAN200"
+        setup_iface_vlan "vlan$VLAN_MGMT" ens20 "$VLAN_MGMT" "$HQ_RTR_VLAN999"
+        setup_iface_gre gre1 "$HQ_IP" "$BR_IP" "$HQ_GRE_ADDR"
         restart_network
         setup_nat ens19
         setup_sudo_user net_admin "" wheel
@@ -554,10 +682,12 @@ EOF
     setup_br_rtr() {
         run "hostnamectl set-hostname br-rtr.au-team.irpo"
         setup_iface_static ens19 "$BR_RTR_ENS19" "${ISP_ENS21%/*}"
-        echo "nameserver ${HQ_SRV_ADDR%/*}" > /etc/net/ifaces/ens19/resolv.conf
-        echo "nameserver 8.8.8.8" >> /etc/net/ifaces/ens19/resolv.conf
+        {
+            echo "nameserver ${HQ_SRV_ADDR%/*}"
+            echo "nameserver $DNS_FWD1"
+        } > /etc/net/ifaces/ens19/resolv.conf
         setup_iface_static ens20 "$BR_RTR_ENS20"
-        setup_iface_gre gre1 "$BR_IP" "$HQ_IP" "$BR_RTR_GRE"
+        setup_iface_gre gre1 "$BR_IP" "$HQ_IP" "$BR_GRE_ADDR"
         restart_network
         setup_nat ens19
         setup_sudo_user net_admin "" wheel
@@ -569,8 +699,10 @@ EOF
     setup_br_fw() {
         run "hostnamectl set-hostname br-fw.au-team.irpo"
         setup_iface_static ens19 "$BR_FW_ENS19" "${BR_RTR_ENS20%/*}"
-        echo "nameserver ${HQ_SRV_ADDR%/*}" > /etc/net/ifaces/ens19/resolv.conf
-        echo "nameserver 8.8.8.8" >> /etc/net/ifaces/ens19/resolv.conf
+        {
+            echo "nameserver ${HQ_SRV_ADDR%/*}"
+            echo "nameserver $DNS_FWD1"
+        } > /etc/net/ifaces/ens19/resolv.conf
         setup_iface_static ens20 "$BR_FW_ENS20"
         restart_network
         setup_nat ens19
@@ -581,7 +713,7 @@ EOF
     setup_hq_srv() {
         run "hostnamectl set-hostname hq-srv.au-team.irpo"
         setup_iface_trunk ens19
-        setup_iface_vlan vlan$VLAN_HQ_SRV ens19 $VLAN_HQ_SRV "$HQ_SRV_ADDR" "${HQ_RTR_VLAN100%/*}" "static"
+        setup_iface_vlan "vlan$VLAN_HQ_SRV" ens19 "$VLAN_HQ_SRV" "$HQ_SRV_ADDR" "${HQ_RTR_VLAN100%/*}" "static"
         restart_network
         setup_sudo_user sshuser 2027 wheel
         setup_ssh "$SSH_PORT" sshuser
@@ -592,8 +724,10 @@ EOF
     setup_br_srv() {
         run "hostnamectl set-hostname br-srv.au-team.irpo"
         setup_iface_static ens19 "$BR_SRV_ADDR" "${BR_FW_ENS20%/*}"
-        echo "nameserver ${HQ_SRV_ADDR%/*}" > /etc/net/ifaces/ens19/resolv.conf
-        echo "nameserver 8.8.8.8" >> /etc/net/ifaces/ens19/resolv.conf
+        {
+            echo "nameserver ${HQ_SRV_ADDR%/*}"
+            echo "nameserver $DNS_FWD1"
+        } > /etc/net/ifaces/ens19/resolv.conf
         restart_network
         setup_sudo_user sshuser 2027 wheel
         setup_ssh "$SSH_PORT" sshuser
@@ -603,7 +737,7 @@ EOF
     setup_hq_cli() {
         run "hostnamectl set-hostname hq-cli.au-team.irpo"
         setup_iface_trunk ens19
-        setup_iface_vlan vlan$VLAN_HQ_CLI ens19 $VLAN_HQ_CLI "" "" "dhcp"
+        setup_iface_vlan "vlan$VLAN_HQ_CLI" ens19 "$VLAN_HQ_CLI" "" "" "dhcp"
         restart_network
         setup_timezone
     }
@@ -618,19 +752,36 @@ EOF
         HQ-CLI)   setup_hq_cli ;;
     esac
 
+    {
+        echo "Machine: $MACHINE"
+        echo "Hostname: $(hostname -f 2>/dev/null || hostname)"
+        echo "Timezone: $(timedatectl 2>/dev/null | awk -F': ' '/Time zone/{print $2}' || echo "$TZ")"
+        echo "SSH Port: $SSH_PORT"
+        echo "VLANs: HQ_SRV=$VLAN_HQ_SRV, HQ_CLI=$VLAN_HQ_CLI, MGMT=$VLAN_MGMT"
+        echo "GRE: HQ=$HQ_GRE_ADDR, BR=$BR_GRE_ADDR"
+        echo "OSPF Auth MD5 key 1: $OSPF_PASS"
+        echo "IPs:"
+        ip -br a 2>/dev/null || true
+    } > "/root/report_${MACHINE}.txt"
+
     echo ""
     echo "========== ИТОГ =========="
     ip -br a 2>/dev/null || true
     ss -tlnp 2>/dev/null | grep ":$SSH_PORT" || echo "SSH не слушает $SSH_PORT"
+    if systemctl list-unit-files 2>/dev/null | grep -q '^dhcpd\.service'; then
+        echo ">>> Статус dhcpd:"
+        systemctl is-active dhcpd 2>/dev/null || true
+    fi
     if command -v vtysh &>/dev/null; then
         echo ">>> Ожидание OSPF (10 сек)..."
         sleep 10
         vtysh -c 'show ip ospf neighbor' 2>/dev/null || true
+        vtysh -c 'show ip route ospf' 2>/dev/null || true
     fi
 
     echo ""
     echo "Сохранение истории и очистка команды запуска..."
-    history -a 
+    history -a
     if [ -f "$HOME/.bash_history" ]; then
         sed -i -E '/(curl|clck\.ru|source[[:space:]]+<\(|exam\.sh|githubusercontent|ini\.sh|bash[[:space:]]+<)/d' "$HOME/.bash_history"
     fi

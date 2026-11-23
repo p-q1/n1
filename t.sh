@@ -260,7 +260,8 @@ EOF
 
         run "iptables -t nat -A POSTROUTING -o $out_iface -j MASQUERADE"
         run "iptables-save > /etc/sysconfig/iptables"
-        run "systemctl enable --now iptables"
+        systemctl enable iptables >/dev/null 2>&1 || true
+        systemctl restart iptables >/dev/null 2>&1 || true
     }
 
     setup_sudo_user() {
@@ -299,7 +300,6 @@ EOF
         hist "nano /etc/openssh/sshd_config"
     }
 
-    # ИСПРАВЛЕННЫЙ БЛОК OSPF ДЛЯ FRR 8
     setup_ospf() {
         local role="$1"
         sed -i 's/^zebra=no/zebra=yes/' /etc/frr/daemons
@@ -313,19 +313,15 @@ hostname hq-rtr
 no ipv6 forwarding
 service integrated-vtysh-config
 !
-interface ens19
+interface gre1
  ip ospf authentication message-digest
  ip ospf message-digest-key 1 md5 $OSPF_PASS
  ip ospf network point-to-point
  no ip ospf passive
 !
-interface gre1
- ip ospf network point-to-point
-!
 router ospf
  ospf router-id $HQ_IP
  passive-interface default
- network $HQ_NET area 0
  network 10.10.10.0/30 area 0
  network $HQ_SRV_NET area 0
  network $HQ_CLI_NET_CALC area 0
@@ -341,7 +337,7 @@ hostname br-rtr
 no ipv6 forwarding
 service integrated-vtysh-config
 !
-interface ens19
+interface gre1
  ip ospf authentication message-digest
  ip ospf message-digest-key 1 md5 $OSPF_PASS
  ip ospf network point-to-point
@@ -351,13 +347,9 @@ interface ens20
  ip ospf network point-to-point
  no ip ospf passive
 !
-interface gre1
- ip ospf network point-to-point
-!
 router ospf
  ospf router-id $BR_IP
  passive-interface default
- network $BR_NET area 0
  network 10.10.10.0/30 area 0
  network $BR_RTR_NET20 area 0
 !
@@ -388,13 +380,12 @@ EOF
         fi
         chown frr:frr /etc/frr/frr.conf
         chmod 640 /etc/frr/frr.conf
-        run "systemctl enable --now frr"
+        systemctl enable frr >/dev/null 2>&1 || true
         run "systemctl restart frr"
         sleep 3
         hist "nano /etc/frr/frr.conf"
     }
 
-    # ИСПРАВЛЕННЫЙ БЛОК DHCP (устранение ошибки chroot)
     setup_dhcp() {
         mkdir -p /etc/dhcp /var/lib/dhcpd /var/lib/dhcp
         touch /var/lib/dhcpd/dhcpd.leases /var/lib/dhcp/dhcpd.leases
@@ -411,22 +402,22 @@ subnet $HQ_CLI_NET netmask 255.255.255.240 {
     range dynamic-bootp $DHCP_RANGE_START $DHCP_RANGE_END;
 }
 EOF
-        # Ключевые флаги -j / и -lf для работы вне стандартного chroot
-        echo "DHCPDARGS=\"-j / -lf /var/lib/dhcpd/dhcpd.leases vlan$VLAN_HQ_CLI\"" > /etc/sysconfig/dhcpd
+        # Убрали -j /, systemd в ALT Linux сам делает chroot
+        echo "DHCPDARGS=\"vlan$VLAN_HQ_CLI\"" > /etc/sysconfig/dhcpd
         
         for i in {1..15}; do
-            ip link show vlan$VLAN_HQ_CLI &>/dev/null && break
+            ip link show vlan$VLAN_HQ_CLI &>/dev/null && ip -4 addr show vlan$VLAN_HQ_CLI | grep -q inet && break
             sleep 1
         done
-        ip link set vlan$VLAN_HQ_CLI up 2>/dev/null || true
         
         if ! dhcpd -t -cf /etc/dhcp/dhcpd.conf; then
             echo "ОШИБКА: конфигурация dhcpd невалидна."
             return 1
         fi
 
-        run "systemctl enable --now dhcpd"
-        systemctl status dhcpd --no-pager -l
+        systemctl enable dhcpd >/dev/null 2>&1 || true
+        run "systemctl restart dhcpd"
+        systemctl status dhcpd --no-pager -l | head -n 10
         hist "nano /etc/dhcp/dhcpd.conf"
         hist "nano /etc/sysconfig/dhcpd"
     }
@@ -516,7 +507,8 @@ EOF
         echo "nameserver 127.0.0.1" > /etc/resolv.conf
 
         run "named-checkconf /etc/named.conf"
-        run "systemctl enable --now named 2>/dev/null || systemctl enable --now bind"
+        systemctl enable named >/dev/null 2>&1 || systemctl enable bind >/dev/null 2>&1 || true
+        run "systemctl restart named 2>/dev/null || systemctl restart bind"
         hist "nano /etc/named.conf"
         hist "nano /etc/bind/options.conf"
         hist "nano /etc/bind/zones.conf"
@@ -627,20 +619,17 @@ EOF
     ip -br a 2>/dev/null || true
     ss -tlnp 2>/dev/null | grep ":$SSH_PORT" || echo "SSH не слушает $SSH_PORT"
     if command -v vtysh &>/dev/null; then
-        echo ">>> Ожидание установления OSPF-соседства (10 сек)..."
+        echo ">>> Ожидание OSPF (10 сек)..."
         sleep 10
         vtysh -c 'show ip ospf neighbor' 2>/dev/null || true
     fi
 
     echo ""
     echo "Сохранение истории и очистка команды запуска..."
-    
     history -a 
-    
     if [ -f "$HOME/.bash_history" ]; then
         sed -i -E '/(curl|clck\.ru|source[[:space:]]+<\(|exam\.sh|githubusercontent|ini\.sh|bash[[:space:]]+<)/d' "$HOME/.bash_history"
     fi
-    
     history -c
     history -r "$HOME/.bash_history"
 
